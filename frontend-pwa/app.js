@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition;
     let isListening = false;
-    let isProcessing = false; // Kunci sistem supaya pengguna tidak menekan mic bertalu-talu
+    let isProcessing = false; 
 
     if (SpeechRecognition) {
         recognition = new SpeechRecognition();
@@ -16,7 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
         recognition.onstart = () => {
             isListening = true;
             micButton.classList.add('listening');
-            statusText.textContent = "Mendengar...";
+            statusText.textContent = "Listening...";
             statusText.style.color = "var(--danger-red)";
             transcriptOutput.textContent = "...";
             transcriptOutput.classList.remove('placeholder-text');
@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         recognition.onerror = (event) => {
             console.error("Speech API Error:", event.error);
-            statusText.textContent = "Ralat mikrofon: " + event.error;
+            statusText.textContent = "Mic error: " + event.error;
             micButton.classList.remove('listening');
             isListening = false;
         };
@@ -40,14 +40,14 @@ document.addEventListener('DOMContentLoaded', () => {
             isListening = false;
         };
     } else {
-        statusText.textContent = "Pelayar tidak menyokong input suara.";
+        statusText.textContent = "Browser not supported for speech recognition.";
         micButton.style.display = 'none';
     }
 
     let audioUnlocked = false;
 
     micButton.addEventListener('click', () => {
-        if (isProcessing) return; // Tolak input jika AI belum selesai membalas
+        if (isProcessing) return; 
 
         if (!audioUnlocked) {
             const unlockUtterance = new SpeechSynthesisUtterance('');
@@ -61,11 +61,9 @@ document.addEventListener('DOMContentLoaded', () => {
             recognition.stop();
         } else {
             try {
-                // PAKSAAN BAHASA: Mesti diletakkan di sini sebelum mula, bukan di atas
                 recognition.lang = 'ms-MY'; 
                 recognition.start();
             } catch (e) {
-                // TANGKAP RALAT: Jika DOMException berlaku, tutup dan cuba semula
                 console.error("Recognition stuck:", e);
                 recognition.stop();
                 setTimeout(() => recognition.start(), 200); 
@@ -80,15 +78,15 @@ document.addEventListener('DOMContentLoaded', () => {
         utterance.rate = 0.95; 
         
         utterance.onend = () => {
-            isProcessing = false; // Buka kunci butang mic semula selepas AI habis bercakap
+            isProcessing = false; 
         };
         
         synth.speak(utterance);
     }
 
     async function processWithAI(text) {
-        isProcessing = true; // Kunci butang mic
-        statusText.textContent = "Menghantar ke CEKAP AI...";
+        isProcessing = true; 
+        statusText.textContent = "Sending to CEKAP AI...";
         statusText.style.color = "var(--text-secondary)";
 
         try {
@@ -101,23 +99,23 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             if (data.status === 'TERMINATE_CALL') {
-                transcriptOutput.textContent = "Panggilan ditamatkan. Penggunaan panggilan palsu dikesan.";
-                statusText.textContent = "PANGGILAN DITAMATKAN";
+                transcriptOutput.textContent = "Call terminated. Fake call usage detected.";
+                statusText.textContent = "CALL TERMINATED";
                 statusText.style.color = "var(--danger-red)";
-                speakText("Panggilan ditamatkan.");
+                speakText("Call terminated.");
                 micButton.disabled = true; 
                 micButton.style.opacity = '0.3';
                 return;
             }
 
             transcriptOutput.textContent = data.reply;
-            statusText.textContent = "Respons diterima.";
+            statusText.textContent = "Response received.";
             speakText(data.reply);
 
         } catch (error) {
             console.error('API Error:', error);
-            statusText.textContent = "Gagal menyambung ke pelayan.";
-            isProcessing = false; // Buka kunci butang jika berlaku ralat pelayan
+            statusText.textContent = "Failed to connect to the server.";
+            isProcessing = false; 
         }
     }
 });
