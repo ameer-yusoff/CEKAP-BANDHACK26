@@ -74,7 +74,7 @@ micButton.addEventListener('click', () => {
         statusText.style.color = "var(--text-secondary)";
 
         try {
-            const response = await fetch('http://127.0.0.1:8000/api/chat', {
+            const response = await fetch('https://cekap-backend.onrender.com/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message: text })
