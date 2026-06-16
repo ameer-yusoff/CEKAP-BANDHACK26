@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         recognition.onerror = (event) => {
-            statusText.textContent = "Ralat mikrofon. Cuba lagi.";
+            statusText.textContent = "Mic error. Try again.";
             micButton.classList.remove('listening');
             isListening = false;
         };
@@ -39,7 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
             isListening = false;
         };
     } else {
-        statusText.textContent = "Pelayar tidak menyokong input suara.";
+        statusText.textContent = "Browser not supported.";
         micButton.style.display = 'none';
     }
 
@@ -93,12 +93,12 @@ micButton.addEventListener('click', () => {
             }
 
             transcriptOutput.textContent = data.reply;
-            statusText.textContent = "Respons diterima.";
+            statusText.textContent = "Response received.";
             speakText(data.reply);
 
         } catch (error) {
             console.error('API Error:', error);
-            statusText.textContent = "Gagal menyambung ke pelayan.";
+            statusText.textContent = "Failed to connect to the server.";
         }
     }
 });
