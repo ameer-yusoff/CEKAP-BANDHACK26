@@ -6,3 +6,4 @@ supabase
 python-dotenv
 requests
 pydantic
+langgraph
