@@ -26,6 +26,13 @@ from thenvoi.config import load_agent_config
 # Import the centralized strict system prompt
 from prompts import FIRST_RESPONDER_PROMPT
 
+# Import the main functions of other agents
+from dispatcher_agent import main as dispatcher_main
+from geo_agent import main as geo_main
+from manager_agent import main as manager_main
+from medical_agent import main as medical_main
+from triage_agent import main as triage_main
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,12 +69,23 @@ band_agent = Agent.create(
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start Band Agent in the background when FastAPI 'start'
-    logger.info("Connecting First Responder to Band platform in the background...")
-    agent_task = asyncio.create_task(band_agent.run())
+    # Start all other agents concurrently
+    logger.info("Connecting First Responder system and all agents to the Band platform...")
+    
+    agent_tasks = [
+        asyncio.create_task(band_agent.run()),
+        asyncio.create_task(dispatcher_main()),
+        asyncio.create_task(geo_main()),
+        asyncio.create_task(manager_main()),
+        asyncio.create_task(medical_main()),
+        asyncio.create_task(triage_main())
+    ]
+    
     yield
-    # Stop Band Agent safely when FastAPI 'shutdown'
-    agent_task.cancel()
+    
+    # Stop all Band Agents safely when FastAPI 'shutdown'
+    for task in agent_tasks:
+        task.cancel()
 
 app = FastAPI(title="CEKAP First Responder API", lifespan=lifespan)
 
