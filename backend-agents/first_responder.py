@@ -36,6 +36,7 @@ load_dotenv()
 # 1. BAND AGENT INITIALIZATION
 # ==========================================
 agent_id, api_key = load_agent_config("first_responder")
+chat_memory = [{"role": "system", "content": FIRST_RESPONDER_PROMPT}]
 
 llm = ChatOpenAI(
     model="deepseek-chat",
@@ -100,13 +101,14 @@ async def handle_chat(request: ChatRequest):
         }
 
     try:        
-        response = await llm.ainvoke([
-            {"role": "system", "content": FIRST_RESPONDER_PROMPT},
-            {"role": "user", "content": user_text}
-        ])
+        chat_memory.append({"role": "user", "content": user_text})
+        
+        response = await llm.ainvoke(chat_memory)
         
         raw_reply = response.content
         clean_reply = re.sub(r'[*#_]', '', raw_reply) 
+        
+        chat_memory.append({"role": "assistant", "content": raw_reply})
 
         return {
             "status": "ACTIVE",
