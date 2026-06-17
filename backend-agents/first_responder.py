@@ -6,25 +6,20 @@ import os
 import re
 from dotenv import load_dotenv
 
-# Add Import for FastAPI
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-import uvicorn
 
-# LangChain and LangGraph imports
 from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import create_react_agent
 
-# Band SDK imports
 from thenvoi import Agent
 from thenvoi.adapters import LangGraphAdapter
 from thenvoi.config import load_agent_config
 
-# Import prompts & other agents
 from prompts import FIRST_RESPONDER_PROMPT
 from dispatcher_agent import main as dispatcher_main
 from geo_agent import main as geo_main
@@ -32,7 +27,6 @@ from manager_agent import main as manager_main
 from medical_agent import main as medical_main
 from triage_agent import main as triage_main
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -56,32 +50,22 @@ adapter = LangGraphAdapter(
     custom_section=FIRST_RESPONDER_PROMPT
 )
 
-# ==========================================
-# 2. CUSTOM TOOLS & MEMORY
-# ==========================================
-@tool
-def trigger_band_escalation(emergency_type: str, location: str) -> str:
-    """
-    CRITICAL TOOL: Supplementary logging tool.
-    """
-    logger.info("\n" + "="*50)
-    logger.warning("🚨 [BEHIND THE SCENES] AI IS COLLABORATING! 🚨")
-    logger.warning(f"EMERGENCY DETAILS: {emergency_type}")
-    logger.warning(f"LOCATION SET: {location}")
-    logger.info("="*50 + "\n")
-    return "SUCCESS: Log recorded. Please make sure you are also using the thenvoi_create_chatroom tool now to contact Agent_Manager."
+# Ekstrak platform tools secara dinamik dari adapter Band SDK
+band_tools = getattr(adapter, 'tools', getattr(adapter, '_tools', getattr(adapter, 'additional_tools', [])))
 
-# Lock system prompt in memory using official LangChain structure
-chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
+# Gunakan ReAct Agent untuk automasi gelung eksekusi pelbagai tool dengan lancar
+react_agent = create_react_agent(llm, tools=band_tools, state_modifier=FIRST_RESPONDER_PROMPT)
 
-# ==========================================
-# 3. FASTAPI SERVER SETUP
-# ==========================================
+chat_memory = []
+
 band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 
+# ==========================================
+# 2. FASTAPI SERVER SETUP
+# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Connecting all CEKAP agents to Band platform simultaneously...")
+    logger.info("Starting all CEKAP agents...")
     agent_tasks = [
         asyncio.create_task(band_agent.run()),
         asyncio.create_task(dispatcher_main()),
@@ -113,69 +97,19 @@ async def handle_chat(request: ChatRequest):
     
     if not user_text:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
-        
-    fake_keywords = ["main-main", "test", "testing", "prank", "gurau"]
-    if any(keyword in user_text.lower() for keyword in fake_keywords):
-        logger.warning("WARNING: Fake call detected and blocked.")
-        return {
-            "status": "TERMINATE_CALL",
-            "reply": "Call terminated immediately as the system detected a fake call attempt."
-        }
 
     try:        
         chat_memory.append(HumanMessage(content=user_text))
-        logger.info("Waiting for First Responder analysis...")
+        logger.info("Processing caller input and executing Band tools if necessary...")
         
-        # [CRITICAL UPDATE]: Extract official Band tools from adapter dynamically
-        band_tools = getattr(adapter, 'tools', getattr(adapter, '_tools', []))
-        all_tools = band_tools + [trigger_band_escalation]
+        # react_agent akan menganalisis, memanggil semua Band tools jika perlu, dan mengembalikan teks lisan
+        response = await react_agent.ainvoke({"messages": chat_memory})
         
-        # Bind all tools so LLM has the ability to communicate to Band server
-        local_llm_with_tools = llm.bind_tools(all_tools)
+        # Tangkap respons akhir dari AI
+        final_ai_msg = response["messages"][-1].content
+        chat_memory.append(AIMessage(content=final_ai_msg))
         
-        response = await local_llm_with_tools.ainvoke(chat_memory)
-        chat_memory.append(response)
-        
-        if response.tool_calls:
-            for tool_call in response.tool_calls:
-                tool_name = tool_call["name"]
-                args = tool_call["args"]
-                logger.info(f"Executing Action: {tool_name}")
-                
-                executed = False
-                for t in all_tools:
-                    t_name = getattr(t, 'name', getattr(t, '__name__', None))
-                    if t_name == tool_name:
-                        try:
-                            # Execute tool to communicate in real-time with other agents
-                            if asyncio.iscoroutinefunction(t.invoke):
-                                tool_output = await t.invoke(args)
-                            else:
-                                tool_output = t.invoke(args)
-                            chat_memory.append(ToolMessage(content=str(tool_output), tool_call_id=tool_call["id"]))
-                            executed = True
-                        except Exception as e:
-                            logger.error(f"Error executing tool {t_name}: {e}")
-                            chat_memory.append(ToolMessage(content="Action failed.", tool_call_id=tool_call["id"]))
-                            executed = True
-                        break
-                        
-                if not executed:
-                    chat_memory.append(ToolMessage(content="Action completed.", tool_call_id=tool_call["id"]))
-
-            # [CRITICAL UPDATE]: Let LLM generate natural sentences based on current state
-            # after opening chat room. No more static/hardcoded responses.
-            final_response = await local_llm_with_tools.ainvoke(chat_memory)
-            chat_memory.append(final_response)
-            
-            clean_reply = re.sub(r'[*#_]', '', final_response.content or "")
-            return {
-                "status": "ACTIVE",
-                "reply": clean_reply
-            }
-
-        raw_reply = response.content or ""
-        clean_reply = re.sub(r'[*#_]', '', raw_reply) 
+        clean_reply = re.sub(r'[*#_]', '', final_ai_msg) 
         
         return {
             "status": "ACTIVE",
@@ -186,5 +120,5 @@ async def handle_chat(request: ChatRequest):
         logger.error(f"API Processing Error: {str(e)}")
         return {
             "status": "ERROR",
-            "reply": "Sorry, CEKAP system is experiencing network disruption. Please try again."
+            "reply": "Sorry, the CEKAP system encountered a network error. Please try again."
         }
