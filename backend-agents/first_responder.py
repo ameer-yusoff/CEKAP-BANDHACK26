@@ -51,16 +51,31 @@ adapter = LangGraphAdapter(
     custom_section=FIRST_RESPONDER_PROMPT
 )
 
-# Dynamically extract platform tools from the Band SDK adapter
-band_tools = getattr(adapter, 'tools', getattr(adapter, '_tools', getattr(adapter, 'additional_tools', [])))
-
-# Initialize the ReAct agent without the 'state_modifier' keyword to prevent version conflicts
-react_agent = create_react_agent(llm, tools=band_tools)
-
-# Lock the system prompt into the main memory
-chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
-
+# Connect to Band first to ensure platform tools are injected into the objects
 band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
+
+# AGGRESSIVE TOOL EXTRACTION
+# Ensure local react_agent gets absolute access to all Band platform tools
+band_tools = []
+for obj in [adapter, band_agent]:
+    for attr in ['tools', '_tools', 'platform_tools', 'additional_tools']:
+        if hasattr(obj, attr):
+            val = getattr(obj, attr)
+            if isinstance(val, list):
+                band_tools.extend(val)
+
+# Deduplicate extracted tools to prevent errors
+unique_tools = {}
+for t in band_tools:
+    name = getattr(t, 'name', None)
+    if name: 
+        unique_tools[name] = t
+final_tools = list(unique_tools.values())
+
+# Initialize local ReAct agent WITH the fully loaded platform tools
+react_agent = create_react_agent(llm, tools=final_tools)
+
+chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
 
 # ==========================================
 # 2. FASTAPI SERVER SETUP
@@ -77,7 +92,6 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(triage_main())
     ]
     yield
-    # Cancel all background agent tasks when the server shuts down
     for task in agent_tasks:
         task.cancel()
 
@@ -96,33 +110,45 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
-    global chat_memory  # Global declaration to ensure memory persists across sessions
+    global chat_memory 
     
     user_text = request.message.strip()
-    
     if not user_text:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:        
-        # Append the user's input to the memory
         chat_memory.append(HumanMessage(content=user_text))
-        logger.info("Processing caller input and executing Band tools if triggered...")
+        logger.info("Processing caller input...")
         
-        # Invoke the ReAct agent with the synchronized message structure
         response = await react_agent.ainvoke({"messages": chat_memory})
-        
-        # Update the global memory with the latest execution chain (including tool calls)
         chat_memory = response["messages"]
         
-        # Extract the final spoken message from the AI
         final_ai_msg = chat_memory[-1].content
         
-        # Clean out any markdown symbols to prevent TTS engine from reading them out loud
-        clean_reply = re.sub(r'[*#_]', '', final_ai_msg) 
+        # PARSING LOGIC: Strictly extract only messages tagged with @Caller
+        reply_to_pwa = []
+        for line in final_ai_msg.split('\n'):
+            line = line.strip()
+            if line.lower().startswith('@caller'):
+                # Remove the @Caller tag and markdown formatting
+                clean_line = re.sub(r'^@caller[:,\s]*', '', line, flags=re.IGNORECASE)
+                clean_line = re.sub(r'[*#_]', '', clean_line)
+                reply_to_pwa.append(clean_line)
         
+        # FALLBACK LOGIC: If AI forgets the tag, return text but block system/internal tags
+        if not reply_to_pwa:
+            for line in final_ai_msg.split('\n'):
+                line_lower = line.strip().lower()
+                if not line_lower.startswith('@internal') and not line_lower.startswith('@agent_'):
+                    reply_to_pwa.append(re.sub(r'[*#_]', '', line.strip()))
+        
+        final_reply = " ".join(reply_to_pwa).strip()
+        if not final_reply:
+            final_reply = "Processing your request..."
+            
         return {
             "status": "ACTIVE",
-            "reply": clean_reply
+            "reply": final_reply
         }
         
     except Exception as e:
