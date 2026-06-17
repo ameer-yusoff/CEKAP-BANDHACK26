@@ -27,6 +27,7 @@ from manager_agent import main as manager_main
 from medical_agent import main as medical_main
 from triage_agent import main as triage_main
 
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,13 @@ adapter = LangGraphAdapter(
     custom_section=FIRST_RESPONDER_PROMPT
 )
 
-# Ekstrak platform tools secara dinamik dari adapter Band SDK
+# Dynamically extract platform tools from the Band SDK adapter
 band_tools = getattr(adapter, 'tools', getattr(adapter, '_tools', getattr(adapter, 'additional_tools', [])))
 
-# Inisialisasi ejen tanpa keyword 'state_modifier' untuk mengelakkan ralat versi
+# Initialize the ReAct agent without the 'state_modifier' keyword to prevent version conflicts
 react_agent = create_react_agent(llm, tools=band_tools)
 
-# Kunci prompt sistem ke dalam memori utama
+# Lock the system prompt into the main memory
 chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
 
 band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
@@ -66,7 +67,7 @@ band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting all CEKAP agents...")
+    logger.info("Starting all CEKAP agents in the background...")
     agent_tasks = [
         asyncio.create_task(band_agent.run()),
         asyncio.create_task(dispatcher_main()),
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(triage_main())
     ]
     yield
+    # Cancel all background agent tasks when the server shuts down
     for task in agent_tasks:
         task.cancel()
 
@@ -94,7 +96,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
-    global chat_memory  # Deklarasi global untuk pastikan memori berterusan antara sesi
+    global chat_memory  # Global declaration to ensure memory persists across sessions
     
     user_text = request.message.strip()
     
@@ -102,17 +104,20 @@ async def handle_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:        
+        # Append the user's input to the memory
         chat_memory.append(HumanMessage(content=user_text))
-        logger.info("Processing caller input and executing Band tools if necessary...")
+        logger.info("Processing caller input and executing Band tools if triggered...")
         
-        # Panggil react_agent dengan struktur mesej yang diselaraskan
+        # Invoke the ReAct agent with the synchronized message structure
         response = await react_agent.ainvoke({"messages": chat_memory})
         
-        # Kemas kini memori global dengan rantaian proses terkini (termasuk tool calls)
+        # Update the global memory with the latest execution chain (including tool calls)
         chat_memory = response["messages"]
         
-        # Ekstrak mesej lisan terakhir daripada AI
+        # Extract the final spoken message from the AI
         final_ai_msg = chat_memory[-1].content
+        
+        # Clean out any markdown symbols to prevent TTS engine from reading them out loud
         clean_reply = re.sub(r'[*#_]', '', final_ai_msg) 
         
         return {
