@@ -64,15 +64,15 @@ def trigger_band_escalation(emergency_type: str, location: str) -> str:
     
     return "SUCCESS: Initial report has been sent to Agent Manager."
 
-# Bind this tool to LLM so it can use it
-llm_with_tools = llm.bind_tools([trigger_band_escalation])
-
 llm = ChatOpenAI(
     model="deepseek-chat",
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     temperature=0.0 
 )
+
+# Bind this tool to LLM so it can use it
+llm_with_tools = llm.bind_tools([trigger_band_escalation])
 
 adapter = LangGraphAdapter(
     llm=llm,
