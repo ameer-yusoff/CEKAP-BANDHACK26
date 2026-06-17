@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
@@ -53,10 +53,11 @@ adapter = LangGraphAdapter(
 # Ekstrak platform tools secara dinamik dari adapter Band SDK
 band_tools = getattr(adapter, 'tools', getattr(adapter, '_tools', getattr(adapter, 'additional_tools', [])))
 
-# Gunakan ReAct Agent untuk automasi gelung eksekusi pelbagai tool dengan lancar
-react_agent = create_react_agent(llm, tools=band_tools, state_modifier=FIRST_RESPONDER_PROMPT)
+# Inisialisasi ejen tanpa keyword 'state_modifier' untuk mengelakkan ralat versi
+react_agent = create_react_agent(llm, tools=band_tools)
 
-chat_memory = []
+# Kunci prompt sistem ke dalam memori utama
+chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
 
 band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 
@@ -93,6 +94,8 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
+    global chat_memory  # Deklarasi global untuk pastikan memori berterusan antara sesi
+    
     user_text = request.message.strip()
     
     if not user_text:
@@ -102,13 +105,14 @@ async def handle_chat(request: ChatRequest):
         chat_memory.append(HumanMessage(content=user_text))
         logger.info("Processing caller input and executing Band tools if necessary...")
         
-        # react_agent akan menganalisis, memanggil semua Band tools jika perlu, dan mengembalikan teks lisan
+        # Panggil react_agent dengan struktur mesej yang diselaraskan
         response = await react_agent.ainvoke({"messages": chat_memory})
         
-        # Tangkap respons akhir dari AI
-        final_ai_msg = response["messages"][-1].content
-        chat_memory.append(AIMessage(content=final_ai_msg))
+        # Kemas kini memori global dengan rantaian proses terkini (termasuk tool calls)
+        chat_memory = response["messages"]
         
+        # Ekstrak mesej lisan terakhir daripada AI
+        final_ai_msg = chat_memory[-1].content
         clean_reply = re.sub(r'[*#_]', '', final_ai_msg) 
         
         return {
