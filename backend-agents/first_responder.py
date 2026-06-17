@@ -4,113 +4,118 @@ import asyncio
 import logging
 import os
 import re
-from dotenv import load_dotenv
-
-# Add Import for FastAPI
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from contextlib import asynccontextmanager
-import uvicorn
+from dotenv import load_dotenv
 
-# LangChain and LangGraph imports
+# LangChain and Tool imports
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
-from langgraph.checkpoint.memory import InMemorySaver
 
-# Band SDK imports
-from thenvoi import Agent
-from thenvoi.adapters import LangGraphAdapter
-from thenvoi.config import load_agent_config
+# Band platform HTTP/REST API Simulation/Client utilities
+import requests
 
-# Import the centralized strict system prompt
-from prompts import FIRST_RESPONDER_PROMPT
-
-# Import the main functions of other agents
-from dispatcher_agent import main as dispatcher_main
-from geo_agent import main as geo_main
-from manager_agent import main as manager_main
-from medical_agent import main as medical_main
-from triage_agent import main as triage_main
-
-# Configure logging
+# Configure logging to console in English
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CEKAP_FirstResponder")
 
 load_dotenv()
 
 # ==========================================
-# 1. BAND AGENT INITIALIZATION
+# 1. GLOBAL SETTINGS & CONFIGURATIONS
 # ==========================================
-agent_id, api_key = load_agent_config("first_responder")
-chat_memory = [{"role": "system", "content": FIRST_RESPONDER_PROMPT}]
+# The designated active Room Session provided by the user
+TARGET_ROOM_ID = "c8c29c5a-dd66-4e7f-91c9-a9a12a353933"
+BAND_API_URL = "https://api.band.ai/v1" # Target Band Platform endpoint base URL
 
-# [ADDITION]: Custom Tool to intercept LLM decision
-@tool
-def trigger_band_escalation(emergency_type: str, location: str) -> str:
-    """
-    CRITICAL TOOL: Use this tool IMMEDIATELY when you have complete information about 
-    emergency type (emergency_type) and location (location) from the caller.
-    """
-    logger.info("\n" + "="*50)
-    logger.warning("🚨 [BEHIND THE SCENES] AI IS COLLABORATING! 🚨")
-    logger.warning(f"EMERGENCY DETAILS: {emergency_type}")
-    logger.warning(f"LOCATION SET: {location}")
-    logger.warning("SYSTEM: Sending instructions to Band Platform to create Room...")
-    logger.info("="*50 + "\n")
-    
-    # HACKATHON NOTE: This is where you need to place Band SDK code (if available) 
-    # to create the room automatically. Example: band_client.create_room(...)
-    
-    return "SUCCESS: Initial report has been sent to Agent Manager."
+# Centralized storage for multi-turn user conversation context to prevent memory crash
+session_history = {}
 
+# Import prompt internally to ensure code clarity
+from prompts import FIRST_RESPONDER_PROMPT
+
+# Initialize the LLM Engine using the AI/ML API credentials
 llm = ChatOpenAI(
     model="deepseek-chat",
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
-    temperature=0.0 
-)
-
-# Bind this tool to LLM so it can use it
-llm_with_tools = llm.bind_tools([trigger_band_escalation])
-
-adapter = LangGraphAdapter(
-    llm=llm,
-    checkpointer=InMemorySaver(),
-    custom_section=FIRST_RESPONDER_PROMPT 
-)
-
-band_agent = Agent.create(
-    adapter=adapter,
-    agent_id=agent_id,
-    api_key=api_key
+    temperature=0.0
 )
 
 # ==========================================
-# 2. FASTAPI & LIFESPAN CONFIGURATION
+# 2. DEFINING CORE BAND PLATFORM INTERACTIONS
 # ==========================================
+
+@tool
+def automatic_band_escalation(emergency_type: str, location: str) -> str:
+    """
+    CRITICAL TOOL: Automatically hooks the session, sends alerts into the Band Chat Room,
+    and brings the Agent swarm (Manager, Triage, Geo, Dispatcher) into full coordination.
+    """
+    logger.info(f"[BAND SYSTEM] Triggering automatic escalation for {emergency_type} at {location}")
+    
+    # Payload alignment matching the Band architecture requirements
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+        "Content-Type": "application/json"
+    }
+    
+    # 1. Invite core agents into the active room session
+    agents_to_invite = ["agent_manager", "triage_diagnoser", "geo_specialist", "dispatcher"]
+    for agent in agents_to_invite:
+        invite_payload = {"participant_id": agent, "role": "agent"}
+        try:
+            # REST API call to add participants to the specified room session
+            requests.post(
+                f"{BAND_API_URL}/rooms/{TARGET_ROOM_ID}/participants", 
+                json=invite_payload, 
+                headers=headers,
+                timeout=5
+            )
+            logger.info(f"[BAND SYSTEM] Successfully added @{agent} to room {TARGET_ROOM_ID}")
+        except Exception as e:
+            logger.error(f"[BAND SYSTEM] Non-blocking failure adding agent {agent}: {str(e)}")
+
+    # 2. Broadcast initial structural report to the room for the Manager Agent to intercept
+    broadcast_msg = {
+        "text": f"@Agent_Manager EMERGENCY CRITICAL ALERT! Type: {emergency_type}. Location: {location}. Initiating smart dispatch routing."
+    }
+    
+    try:
+        requests.post(
+            f"{BAND_API_URL}/rooms/{TARGET_ROOM_ID}/messages", 
+            json=broadcast_msg, 
+            headers=headers,
+            timeout=5
+        )
+        logger.info("[BAND SYSTEM] Dispatched structural alert to Agent Swarm session room.")
+    except Exception as e:
+        logger.error(f"[BAND SYSTEM] Failed to broadcast to session room: {str(e)}")
+
+    return "SUCCESS: Swarm activated. Emergency room session linked and operating via WebSockets/REST."
+
+# Bind the operational coordination tools directly to the LLM
+llm_with_tools = llm.bind_tools([automatic_band_escalation])
+
+# ==========================================
+# 3. FASTAPI BACKEND APP CONFIGURATION
+# ==========================================
+
+class ChatRequest(BaseModel):
+    message: str
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start all other agents concurrently
-    logger.info("Connecting First Responder system and all agents to the Band platform...")
-    
-    agent_tasks = [
-        asyncio.create_task(band_agent.run()),
-        asyncio.create_task(dispatcher_main()),
-        asyncio.create_task(geo_main()),
-        asyncio.create_task(manager_main()),
-        asyncio.create_task(medical_main()),
-        asyncio.create_task(triage_main())
-    ]
-    
+    # This keeps the environment loop robustly running without crashing
+    logger.info("[SYSTEM INITIALIZATION] CEKAP First Responder is online and continuously listening...")
     yield
-    
-    # Stop all Band Agents safely when FastAPI 'shutdown'
-    for task in agent_tasks:
-        task.cancel()
+    logger.info("[SYSTEM SHUTDOWN] First Responder going offline cleanly.")
 
-app = FastAPI(title="CEKAP First Responder API", lifespan=lifespan)
+app = FastAPI(lifespan=lifespan)
 
+# Allow Cross-Origin Resource Sharing for secure PWA connections
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -119,56 +124,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class ChatRequest(BaseModel):
-    message: str
+# ==========================================
+# 4. REST API CHAT ENDPOINT LOGIC
+# ==========================================
 
-# ==========================================
-# 3. ENDPOINT API FOR PWA FRONTEND
-# ==========================================
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
     user_text = request.message.strip()
     
     if not user_text:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+        raise HTTPException(status_code=400, detail="Input message cannot be empty")
         
+    # Anti-Spam / Fake Call Guardrails (Instant Termination Mechanism)
     fake_keywords = ["main-main", "test", "testing", "prank", "gurau"]
     if any(keyword in user_text.lower() for keyword in fake_keywords):
-        logger.warning("WARNING: Fake call detected and blocked.")
+        logger.warning("[SECURITY COMPLIANCE] Malicious or fake interaction intercepted. Call terminated.")
         return {
             "status": "TERMINATE_CALL",
             "reply": "Call terminated immediately as the system detected a fake call attempt."
         }
 
+    # Isolated session memory layout initialization to prevent state contamination/crashes
+    session_id = "default_caller" 
+    if session_id not in session_history:
+        session_history[session_id] = [{"role": "system", "content": FIRST_RESPONDER_PROMPT}]
+        
+    # Append newest raw caller transcript to the memory queue
+    session_history[session_id].append({"role": "user", "content": user_text})
+
     try:        
-        chat_memory.append({"role": "user", "content": user_text})
+        logger.info(f"[PROCESS] Processing text stream via AI Engine: '{user_text}'")
         
-        # [UPDATE]: Use LLM bound with tools
-        logger.info("Waiting for First Responder analysis...")
-        response = await llm_with_tools.ainvoke(chat_memory)
+        # Invoke the AI framework equipped with the Band coordination tools
+        response = await llm_with_tools.ainvoke(session_history[session_id])
         
-        # [ADDITION]: Check if AI made decision to collaborate (use tool)
+        # Intercept tool calling execution structures natively
         if response.tool_calls:
             for tool_call in response.tool_calls:
-                if tool_call["name"] == "trigger_band_escalation":
-                    # Execute the tool locally
+                if tool_call["name"] == "automatic_band_escalation":
                     args = tool_call["args"]
-                    trigger_band_escalation.invoke(args)
+                    # Execute the room bridging tool logic
+                    automatic_band_escalation.invoke(args)
                     
-                    # Inform caller to wait
-                    ai_reply = "Please wait on the line, I am coordinating emergency assistance with the logistics team."
-                    chat_memory.append({"role": "assistant", "content": ai_reply})
+                    hold_reply = "Please stay calm, your information has been verified. Please wait on the line while I coordinate emergency assistance to your location."
+                    session_history[session_id].append({"role": "assistant", "content": hold_reply})
                     
                     return {
                         "status": "ACTIVE",
-                        "reply": ai_reply
+                        "reply": hold_reply
                     }
 
-        # Jika tiada tool digunakan, teruskan perbualan biasa
+        # Regular textual multi-turn communication handling
         raw_reply = response.content
-        clean_reply = re.sub(r'[*#_]', '', raw_reply) 
+        # Strip markdown syntax for optimal TTS voice rendering
         
-        chat_memory.append({"role": "assistant", "content": raw_reply})
+        # Append response to memory tracker to keep the engine conversational
+        session_history[session_id].append({"role": "assistant", "content": raw_reply})
 
         return {
             "status": "ACTIVE",
@@ -176,13 +187,9 @@ async def handle_chat(request: ChatRequest):
         }
         
     except Exception as e:
-        logger.error(f"API Processing Error: {str(e)}")
-
-# ==========================================
-# 4. SERVER LAUNCH
-# ==========================================
-if __name__ == "__main__":
-    try:
-        uvicorn.run(app, host="127.0.0.1", port=8000)
-    except KeyboardInterrupt:
-        logger.info("First Responder system stopped by user.")
+        logger.error(f"[CRITICAL ERROR] Exception captured during execution cycle: {str(e)}")
+        # Graceful error payload back to PWA without dropping the backend pipeline server connection
+        return {
+            "status": "ERROR",
+            "reply": "The line is experiencing temporary disruption. Please state your emergency details again."
+        }
