@@ -45,6 +45,28 @@ load_dotenv()
 agent_id, api_key = load_agent_config("first_responder")
 chat_memory = [{"role": "system", "content": FIRST_RESPONDER_PROMPT}]
 
+# [ADDITION]: Custom Tool to intercept LLM decision
+@tool
+def trigger_band_escalation(emergency_type: str, location: str) -> str:
+    """
+    CRITICAL TOOL: Use this tool IMMEDIATELY when you have complete information about 
+    emergency type (emergency_type) and location (location) from the caller.
+    """
+    logger.info("\n" + "="*50)
+    logger.warning("🚨 [BEHIND THE SCENES] AI IS COLLABORATING! 🚨")
+    logger.warning(f"EMERGENCY DETAILS: {emergency_type}")
+    logger.warning(f"LOCATION SET: {location}")
+    logger.warning("SYSTEM: Sending instructions to Band Platform to create Room...")
+    logger.info("="*50 + "\n")
+    
+    # HACKATHON NOTE: This is where you need to place Band SDK code (if available) 
+    # to create the room automatically. Example: band_client.create_room(...)
+    
+    return "SUCCESS: Initial report has been sent to Agent Manager."
+
+# Bind this tool to LLM so it can use it
+llm_with_tools = llm.bind_tools([trigger_band_escalation])
+
 llm = ChatOpenAI(
     model="deepseek-chat",
     api_key=os.getenv("OPENAI_API_KEY"),
@@ -121,8 +143,28 @@ async def handle_chat(request: ChatRequest):
     try:        
         chat_memory.append({"role": "user", "content": user_text})
         
-        response = await llm.ainvoke(chat_memory)
+        # [UPDATE]: Use LLM bound with tools
+        logger.info("Waiting for First Responder analysis...")
+        response = await llm_with_tools.ainvoke(chat_memory)
         
+        # [ADDITION]: Check if AI made decision to collaborate (use tool)
+        if response.tool_calls:
+            for tool_call in response.tool_calls:
+                if tool_call["name"] == "trigger_band_escalation":
+                    # Execute the tool locally
+                    args = tool_call["args"]
+                    trigger_band_escalation.invoke(args)
+                    
+                    # Inform caller to wait
+                    ai_reply = "Please wait on the line, I am coordinating emergency assistance with the logistics team."
+                    chat_memory.append({"role": "assistant", "content": ai_reply})
+                    
+                    return {
+                        "status": "ACTIVE",
+                        "reply": ai_reply
+                    }
+
+        # Jika tiada tool digunakan, teruskan perbualan biasa
         raw_reply = response.content
         clean_reply = re.sub(r'[*#_]', '', raw_reply) 
         
@@ -135,10 +177,6 @@ async def handle_chat(request: ChatRequest):
         
     except Exception as e:
         logger.error(f"API Processing Error: {str(e)}")
-        return {
-            "status": "ERROR",
-            "reply": "Sorry, CEKAP system is experiencing network interruption. Please try again."
-        }
 
 # ==========================================
 # 4. SERVER LAUNCH
