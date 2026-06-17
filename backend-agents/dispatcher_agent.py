@@ -6,7 +6,7 @@ import os
 import requests
 from dotenv import load_dotenv
 
-# Tambahan import Supabase client
+# Additional Supabase client import
 from supabase import create_client, Client
 
 from langchain_openai import ChatOpenAI
@@ -25,7 +25,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Inisialisasi Klien Supabase
+# Initialize Supabase Client
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 supabase_client: Client = create_client(supabase_url, supabase_key)
@@ -38,7 +38,7 @@ def send_telegram_dispatch(record_id: str, emergency_details: str, latitude: str
     """
     logger.info("Sending dispatch to Telegram and updating Supabase...")
     
-    # Format pautan Maps yang telah dibetulkan
+    # Corrected Maps link format
     maps_link = f"https://maps.google.com/?q={latitude},{longitude}"
     
     message = (
@@ -55,10 +55,10 @@ def send_telegram_dispatch(record_id: str, emergency_details: str, latitude: str
     }
     
     try:
-        # 1. Tembak mesej ke Telegram bot
+        # 1. Send message to Telegram bot
         response = requests.post(url, json=payload)
         
-        # 2. Jika berjaya, terus update Maps link ke dalam database Supabase
+        # 2. If successful, continue updating Maps link in Supabase database
         if response.status_code == 200:
             supabase_client.table("emergency_logs").update({"maps_link": maps_link}).eq("id", record_id).execute()
             return f"SUCCESS: Message dispatched to Telegram and Supabase updated for Record ID {record_id}."

@@ -62,11 +62,11 @@ band_agent = Agent.create(
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Mulakan Band Agent di latar belakang apabila FastAPI 'start'
-    logger.info("Menyambungkan First Responder ke platform Band di latar belakang...")
+    # Start Band Agent in the background when FastAPI 'start'
+    logger.info("Connecting First Responder to Band platform in the background...")
     agent_task = asyncio.create_task(band_agent.run())
     yield
-    # Hentikan Band Agent dengan selamat apabila FastAPI 'shutdown'
+    # Stop Band Agent safely when FastAPI 'shutdown'
     agent_task.cancel()
 
 app = FastAPI(title="CEKAP First Responder API", lifespan=lifespan)
@@ -90,14 +90,14 @@ async def handle_chat(request: ChatRequest):
     user_text = request.message.strip()
     
     if not user_text:
-        raise HTTPException(status_code=400, detail="Mesej tidak boleh kosong")
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
         
     fake_keywords = ["main-main", "test", "testing", "prank", "gurau"]
     if any(keyword in user_text.lower() for keyword in fake_keywords):
-        logger.warning("AMARAN: Panggilan palsu dikesan dan disekat.")
+        logger.warning("WARNING: Fake call detected and blocked.")
         return {
             "status": "TERMINATE_CALL",
-            "reply": "Panggilan ditamatkan serta-merta kerana sistem mengesan cubaan panggilan palsu."
+            "reply": "Call terminated immediately as the system detected a fake call attempt."
         }
 
     try:        
@@ -116,10 +116,10 @@ async def handle_chat(request: ChatRequest):
         }
         
     except Exception as e:
-        logger.error(f"Ralat Pemprosesan API: {str(e)}")
+        logger.error(f"API Processing Error: {str(e)}")
         return {
             "status": "ERROR",
-            "reply": "Harap maaf, sistem CEKAP mengalami gangguan rangkaian. Sila ulang semula."
+            "reply": "Sorry, CEKAP system is experiencing network interruption. Please try again."
         }
 
 # ==========================================
@@ -129,4 +129,4 @@ if __name__ == "__main__":
     try:
         uvicorn.run(app, host="127.0.0.1", port=8000)
     except KeyboardInterrupt:
-        logger.info("Sistem First Responder dihentikan oleh pengguna.")
+        logger.info("First Responder system stopped by user.")
