@@ -39,7 +39,7 @@ load_dotenv()
 agent_id, api_key = load_agent_config("first_responder")
 
 llm = ChatOpenAI(
-    model="deepseek-chat",
+    model="gpt-4o-mini",
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     temperature=0.0 
@@ -142,12 +142,13 @@ async def handle_chat(request: ChatRequest):
         reply_to_pwa = []
         for line in final_ai_msg.split('\n'):
             line = line.strip()
+            # HANYA tangkap ayat yang dimulakan dengan @Caller secara eksplisit
             if line.lower().startswith('@caller'):
-                # Remove the @Caller tag and markdown formatting
+                # Buang tag @Caller dan simbol markdown
                 clean_line = re.sub(r'^@caller[:,\s]*', '', line, flags=re.IGNORECASE)
                 clean_line = re.sub(r'[*#_]', '', clean_line)
                 reply_to_pwa.append(clean_line)
-        
+                        
         # FALLBACK LOGIC: If AI forgets the tag, return text but block system/internal tags
         if not reply_to_pwa:
             for line in final_ai_msg.split('\n'):
