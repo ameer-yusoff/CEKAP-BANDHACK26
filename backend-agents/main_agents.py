@@ -1,6 +1,7 @@
 # main_agents.py
 import asyncio
 import logging
+import os
 from first_responder import app as fastapi_app
 import uvicorn
 
@@ -21,9 +22,7 @@ async def start_system():
     asyncio.create_task(triage_main())
     
     # Configure and run FastAPI server in the same event loop
-    config = uvicorn.Config("first_responder:app", host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    config = uvicorn.Config("first_responder:app", host="0.0.0.0", port=port)
     server = uvicorn.Server(config)
     await server.serve()
-
-if __name__ == "__main__":
-    asyncio.run(start_system())
