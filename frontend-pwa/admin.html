@@ -100,11 +100,34 @@
     </div>
 
     <script>
-        const supabaseUrl = 'YOUR_SUPABASE_URL';
-        const supabaseKey = 'YOUR_SUPABASE_ANON_KEY';
-        const supabase = supabaseClient.createClient(supabaseUrl, supabaseKey);
+        let supabase = null;
+
+        async function initSupabase() {
+            try {
+                // Try to fetch config from backend endpoint
+                const response = await fetch('/api/config');
+                if (response.ok) {
+                    const config = await response.json();
+                    supabase = supabaseClient.createClient(config.supabaseUrl, config.supabaseKey);
+                } else {
+                    // Fallback: try to read from browser environment or localStorage
+                    const supabaseUrl = localStorage.getItem('SUPABASE_URL') || import.meta.env?.VITE_SUPABASE_URL;
+                    const supabaseKey = localStorage.getItem('SUPABASE_KEY') || import.meta.env?.VITE_SUPABASE_KEY;
+                    
+                    if (!supabaseUrl || !supabaseKey) {
+                        throw new Error('Supabase configuration not found. Please configure SUPABASE_URL and SUPABASE_KEY.');
+                    }
+                    supabase = supabaseClient.createClient(supabaseUrl, supabaseKey);
+                }
+            } catch (error) {
+                console.error('Failed to initialize Supabase:', error);
+                document.body.innerHTML = `<h1 style="color: red; padding: 2rem;">Error: ${error.message}</h1>`;
+            }
+        }
 
         async function fetchLogs() {
+            if (!supabase) return;
+            
             const { data, error } = await supabase
                 .from('emergency_logs')
                 .select('*')
@@ -170,8 +193,11 @@
             }
         }
 
-        fetchLogs();
-        setInterval(fetchLogs, 5000);
+        // Initialize Supabase and start fetching logs
+        initSupabase().then(() => {
+            fetchLogs();
+            setInterval(fetchLogs, 5000);
+        });
     </script>
 </body>
 </html>
