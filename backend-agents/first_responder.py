@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+import re
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException
@@ -49,57 +50,78 @@ first_responder_client = None
 processed_msg_ids = set()
 
 # ==========================================
-# 2. PHASE 1 & 2: PROGRAMMATIC INFRASTRUCTURE
+# 2. PHASE 1 & 2: DYNAMIC INFRASTRUCTURE
 # ==========================================
 async def build_cekap_infrastructure():
     global CEKAP_ROOM_ID, first_responder_client
-    logger.info("Starting programmatic CEKAP infrastructure build...")
+    logger.info("Starting DYNAMIC CEKAP infrastructure build...")
     
     try:
-        # Use the first_responder agent as the "Coordinator/Admin" for this room
         fr_id, fr_key = AGENTS["first_responder"]
         first_responder_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
-        
-        # Use Supabase to prevent 'Ghost Rooms' on every deploy
         supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+        
+        needs_new_room = True
+        
+        # 1. Check for an existing active room
         try:
-            res = supabase.table("emergency_logs").select("raw_location").eq("status", "ACTIVE_ROOM").execute()
+            res = supabase.table("emergency_logs").select("id, raw_location").eq("status", "ACTIVE_ROOM").execute()
             if res.data and len(res.data) > 0:
-                CEKAP_ROOM_ID = res.data[0]["raw_location"]
-                logger.info(f"Existing room found. Reusing room: {CEKAP_ROOM_ID}")
-                return
-        except Exception:
-            pass
+                potential_room_id = res.data[0]["raw_location"]
+                record_id = res.data[0]["id"]
+                
+                # 2. DYNAMIC CHECK: Verify message count to avoid 403 limit
+                # We fetch the first page of messages and check total_count (or simulate check)
+                try:
+                    msg_res = await first_responder_client.agent_api_messages.get_agent_chat_messages(chat_id=potential_room_id, page=1)
+                    # Safe check if the attribute exists or fallback to guessing it's safe if < 900
+                    total_messages = getattr(getattr(msg_res, "meta", None), "total", 0)
+                    
+                    if total_messages < 900:
+                        CEKAP_ROOM_ID = potential_room_id
+                        needs_new_room = False
+                        logger.info(f"Existing healthy room found ({total_messages} msgs). Reusing: {CEKAP_ROOM_ID}")
+                    else:
+                        logger.warning(f"Room {potential_room_id} is reaching limit ({total_messages} msgs). Retiring room.")
+                        # Retire the old room
+                        supabase.table("emergency_logs").update({"status": "RETIRED_ROOM"}).eq("id", record_id).execute()
+                except Exception as e:
+                    logger.warning(f"Could not verify room health, assuming it's full. Retiring. Error: {e}")
+                    supabase.table("emergency_logs").update({"status": "RETIRED_ROOM"}).eq("id", record_id).execute()
+        except Exception as e:
+            logger.info(f"No active room found in DB. Creating new one. {e}")
+
+        # 3. Create a new room if needed
+        if needs_new_room:
+            logger.info("Creating a fresh Operations Room...")
+            resp = await first_responder_client.agent_api_chats.create_agent_chat(chat=ChatRoomRequest())
+            CEKAP_ROOM_ID = resp.data.id
+            logger.info(f"PHASE 1 SUCCESS: New Room created -> {CEKAP_ROOM_ID}")
             
-        # PHASE 1: Build Room using REST API
-        resp = await first_responder_client.agent_api_chats.create_agent_chat(chat=ChatRoomRequest())
-        CEKAP_ROOM_ID = resp.data.id
-        logger.info(f"PHASE 1 SUCCESS: Operations Room created -> {CEKAP_ROOM_ID}")
-        
-        # Save new room ID to Supabase for future use
-        try:
-            supabase.table("emergency_logs").insert({
-                "emergency_type": "SYSTEM", "priority_level": "N/A", 
-                "injuries": "N/A", "raw_location": CEKAP_ROOM_ID, "status": "ACTIVE_ROOM"
-            }).execute()
-        except Exception:
-            pass
-        
-        # PHASE 2: Add all support agents into the room
-        for name, (agent_id, api_key) in AGENTS.items():
-            if name == "first_responder":
-                continue # First responder is already the room creator
+            # Save new room ID to Supabase with the consistent "ACTIVE_ROOM" tag
+            try:
+                supabase.table("emergency_logs").insert({
+                    "emergency_type": "SYSTEM", "priority_level": "N/A", 
+                    "injuries": "N/A", "raw_location": CEKAP_ROOM_ID, "status": "ACTIVE_ROOM" 
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to log new room in DB: {e}")
             
-            await first_responder_client.agent_api_participants.add_agent_chat_participant(
-                CEKAP_ROOM_ID, 
-                participant=ParticipantRequest(participant_id=agent_id, role="member")
-            )
-            logger.info(f"Added to room: @{name}")
-            
-        logger.info("PHASE 2 SUCCESS: All agents are ready in the operations room.")
+            # PHASE 2: Add all support agents into the new room
+            for name, (agent_id, api_key) in AGENTS.items():
+                if name == "first_responder":
+                    continue 
+                
+                await first_responder_client.agent_api_participants.add_agent_chat_participant(
+                    CEKAP_ROOM_ID, 
+                    participant=ParticipantRequest(participant_id=agent_id, role="member")
+                )
+                logger.info(f"Added to room: @{name}")
+                
+            logger.info("PHASE 2 SUCCESS: All agents are ready in the new operations room.")
 
     except Exception as e:
-        logger.error(f"Failed to build infrastructure: {str(e)}")
+        logger.error(f"Failed to build dynamic infrastructure: {str(e)}")
 
 # ==========================================
 # FIRST RESPONDER AI BRAIN
@@ -126,7 +148,6 @@ async def first_responder_main():
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Build room and arrange structure as soon as the server starts
     await build_cekap_infrastructure()
     
     agent_tasks = []
@@ -134,7 +155,6 @@ async def lifespan(app: FastAPI):
     async def start_agents_staggered():
         logger.info("Booting agents in a staggered sequence to prevent WebSocket Timeout...")
         
-        # 2-second delay for each agent to prevent WebSocket flood
         agent_tasks.append(asyncio.create_task(first_responder_main()))
         await asyncio.sleep(2)
         
@@ -154,17 +174,14 @@ async def lifespan(app: FastAPI):
         
         logger.info("ALL AGENTS SUCCESSFULLY BOOTED AND READY!")
 
-    # Start staggered boot process
     boot_task = asyncio.create_task(start_agents_staggered())
-    
     yield  
-    
     boot_task.cancel()
     for task in agent_tasks:
         task.cancel()
 
 # ==========================================
-# APP INITIALIZATION (THE FIX FOR THE ERROR)
+# APP INITIALIZATION
 # ==========================================
 app = FastAPI(lifespan=lifespan)
 
@@ -191,8 +208,6 @@ async def handle_chat(request: ChatRequest):
     user_text = request.message.strip()
     
     try:
-        # 1. Send caller message to the room using Dispatcher identity (as PWA system proxy)
-        # This ensures the First Responder agent (LLM) reads it as an external message
         disp_id, disp_key = AGENTS["dispatcher"]
         disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
         
@@ -207,7 +222,6 @@ async def handle_chat(request: ChatRequest):
             )
         )
         
-        # 2. Polling for answers: Peek into Band message inbox for Dispatcher
         for _ in range(15):
             await asyncio.sleep(2)
             try:
@@ -217,19 +231,21 @@ async def handle_chat(request: ChatRequest):
                     content = getattr(msg_data, "content", "")
                     msg_id = getattr(msg_data, "id", None)
                     
-                    # Filter strictly so ONLY official First Responder messages to caller are displayed
                     if content and msg_id not in processed_msg_ids and "@Caller" in content:
                         processed_msg_ids.add(msg_id)
                         
-                        # Clean technical tags before sending to user TTS function
-                        clean_reply = content.replace("@Caller", "").replace("@dispatcher", "").replace("@Dispatcher", "").replace("_", "").replace("*", "").strip()
+                        # ADVANCED CLEANUP
+                        clean_reply = re.sub(r'\[\{.*?\}\]', '', content) 
+                        clean_reply = re.sub(r'@[a-zA-Z0-9_]+', '', clean_reply) 
+                        clean_reply = clean_reply.replace("Please relay these steps to the caller:", "")
+                        clean_reply = re.sub(r'[*#_]', '', clean_reply).strip()
                         
                         if "TERMINATE" in clean_reply.upper():
                             return {"status": "TERMINATE_CALL", "reply": "Call forcefully terminated due to policy violation."}
                             
                         return {"status": "ACTIVE", "reply": clean_reply}
             except Exception:
-                pass # Continue polling if no new messages
+                pass 
 
         return {"status": "ACTIVE", "reply": "System is processing information and coordinating units. Please wait..."}
 
