@@ -2,10 +2,9 @@ fastapi
 uvicorn
 langchain-openai
 thenvoi-sdk
+band-sdk>=1.0.0
 supabase
 python-dotenv
 requests
 pydantic
 langgraph
-numpy>=1.26.4
-band
