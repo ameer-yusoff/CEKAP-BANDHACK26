@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from supabase import create_client
 
 # Official Band REST Client Library (as used in the warroom)
 from band.client.rest import AsyncRestClient, ChatRoomRequest, ParticipantRequest, ChatMessageRequest, ChatMessageRequestMentionsItem
@@ -54,10 +55,30 @@ async def build_cekap_infrastructure():
         fr_id, fr_key = AGENTS["first_responder"]
         first_responder_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
         
+        # [KEMASKINI: Guna Supabase untuk elak lambakan 'Ghost Rooms' setiap kali deploy]
+        supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+        try:
+            res = supabase.table("emergency_logs").select("raw_location").eq("status", "ACTIVE_ROOM").execute()
+            if res.data and len(res.data) > 0:
+                CEKAP_ROOM_ID = res.data[0]["raw_location"]
+                logger.info(f"Bilik sedia ada dijumpai. Sistem menggunakan semula bilik: {CEKAP_ROOM_ID}")
+                return
+        except Exception:
+            pass
+            
         # PHASE 1: Build Room using REST API
         resp = await first_responder_client.agent_api_chats.create_agent_chat(chat=ChatRoomRequest())
         CEKAP_ROOM_ID = resp.data.id
         logger.info(f"PHASE 1 SUCCESS: Operations Room created -> {CEKAP_ROOM_ID}")
+        
+        # [KEMASKINI: Simpan ID bilik baharu ke Supabase untuk penggunaan akan datang]
+        try:
+            supabase.table("emergency_logs").insert({
+                "emergency_type": "SYSTEM", "priority_level": "N/A", 
+                "injuries": "N/A", "raw_location": CEKAP_ROOM_ID, "status": "ACTIVE_ROOM"
+            }).execute()
+        except Exception:
+            pass
         
         # PHASE 2: Add all support agents into the room
         for name, (agent_id, api_key) in AGENTS.items():
@@ -136,12 +157,11 @@ async def handle_chat(request: ChatRequest):
                 resp = await first_responder_client.agent_api_messages.get_agent_next_message(CEKAP_ROOM_ID)
                 content = getattr(getattr(resp, "data", None), "content", None)
                 
-                if content and "@Caller" in content:
-                    # Clean up tags and send to PWA TTS
-                    clean_reply = content.replace("@Caller", "").replace("@First_Responder", "").replace("_", "").replace("*", "").strip()
+                if content:
+                    clean_reply = content.replace("@Caller", "").replace("@First_Responder", "").replace("@first_responder", "").replace("_", "").replace("*", "").strip()
                     
                     if "TERMINATE" in clean_reply.upper():
-                        return {"status": "TERMINATE_CALL", "reply": "Call forcefully terminated."}
+                        return {"status": "TERMINATE_CALL", "reply": "Panggilan ditamatkan secara paksa."}
                         
                     return {"status": "ACTIVE", "reply": clean_reply}
             except Exception:
