@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import httpx
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException
@@ -39,7 +40,7 @@ load_dotenv()
 agent_id, api_key = load_agent_config("first_responder")
 
 llm = ChatOpenAI(
-    model="gpt-4o-mini",
+    model="deepseek-chat",
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     temperature=0.0 
@@ -51,11 +52,9 @@ adapter = LangGraphAdapter(
     custom_section=FIRST_RESPONDER_PROMPT
 )
 
-# Connect to Band first to ensure platform tools are injected into the objects
 band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 
 # AGGRESSIVE TOOL EXTRACTION
-# Ensure local react_agent gets absolute access to all Band platform tools
 band_tools = []
 for obj in [adapter, band_agent]:
     for attr in ['tools', '_tools', 'platform_tools', 'additional_tools']:
@@ -64,7 +63,6 @@ for obj in [adapter, band_agent]:
             if isinstance(val, list):
                 band_tools.extend(val)
 
-# Deduplicate extracted tools to prevent errors
 unique_tools = {}
 for t in band_tools:
     name = getattr(t, 'name', None)
@@ -72,14 +70,59 @@ for t in band_tools:
         unique_tools[name] = t
 final_tools = list(unique_tools.values())
 
-# Initialize local ReAct agent WITH the fully loaded platform tools
 react_agent = create_react_agent(llm, tools=final_tools)
-
 chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
 is_room_setup = False
 
 # ==========================================
-# 2. FASTAPI SERVER SETUP
+# 2. ALTERNATIVE 2: PROGRAMMATIC ROOM SETUP
+# ==========================================
+async def programmatic_room_setup() -> str:
+    """
+    Execute room setup process via native API (bypassing LLM).
+    100% free from hallucination errors or AI safety rejection.
+    """
+    logger.info("SYSTEM OVERRIDE: Starting Programmatic Room Setup via REST API...")
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            # Langkah 1: Cipta Bilik
+            res = await client.post("https://app.thenvoi.com/api/v1/agent/chats", headers=headers, json={"name": "Emergency Incident"})
+            if res.status_code not in [200, 201]:
+                logger.error(f"Failed to create room: {res.text}")
+                return None
+                
+            chat_id = res.json().get("id")
+            logger.info(f"Room successfully created programmatically. ID: {chat_id}")
+            
+            # Langkah 2: Tambah Peserta
+            participants = ["agent_manager", "triage_diagnoser", "geo_specialist", "medical_agent", "dispatcher"]
+            for p in participants:
+                await client.post(
+                    f"https://app.thenvoi.com/api/v1/agent/chats/{chat_id}/participants",
+                    headers=headers,
+                    json={"username": p}
+                )
+                
+            # Langkah 3: Hantar Mesej Pencetus Pemasangan (Trigger)
+            await client.post(
+                f"https://app.thenvoi.com/api/v1/agent/chats/{chat_id}/messages",
+                headers=headers,
+                json={"text": "@agent_manager System Online. Ready for triage."}
+            )
+            
+        logger.info("Programmatic setup completed successfully.")
+        return chat_id
+    except Exception as e:
+        logger.error(f"Programmatic Setup Error: {str(e)}")
+        return None
+
+# ==========================================
+# 3. FASTAPI SERVER SETUP
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -118,47 +161,41 @@ async def handle_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:        
+        # Execute Alternative 2: Programmatic Setup
         if not is_room_setup:
-            logger.info("SYSTEM OVERRIDE: Building room automatically via safe tool commands...")
-            setup_cmd = HumanMessage(content="Hello. We are starting a new emergency session. Please safely execute your tools to complete these 3 setup steps sequentially:\n1. Create a new chatroom for this incident.\n2. Add these exact participants to the room: @agent_manager, @triage_diagnoser, @geo_specialist, @medical_agent, and @dispatcher.\n3. Send a message to the room saying exactly: '@agent_manager System Online. Ready for triage.'")
-            
-            # Execute tool operations behind the scenes first
-            setup_res = await react_agent.ainvoke({"messages": chat_memory + [setup_cmd]})
-            chat_memory = setup_res["messages"]
-            
-            logger.info(f"ROOM SETUP RESULT: {chat_memory[-1].content}")
-            
-            is_room_setup = True
+            chat_id = await programmatic_room_setup()
+            if chat_id:
+                # Inject context awareness into LLM memory
+                system_notice = HumanMessage(
+                    content=f"SYSTEM NOTICE: The chat room has been created automatically. The Chat ID is '{chat_id}'. "
+                            f"DO NOT execute Step 1 (Initialize Room). Proceed directly to Step 2. "
+                            f"Use this Chat ID '{chat_id}' when calling 'thenvoi_send_message' in Step 3."
+                )
+                chat_memory.append(system_notice)
+                is_room_setup = True
 
         chat_memory.append(HumanMessage(content=user_text))
         logger.info("Processing caller input...")
         
         response = await react_agent.ainvoke({"messages": chat_memory})
         chat_memory = response["messages"]
-        
         final_ai_msg = chat_memory[-1].content
         
-        # PARSING LOGIC: Strictly extract only messages tagged with @Caller
+        # STRICT PARSING LOGIC: No more fallback that leaks LLM monologue
         reply_to_pwa = []
         for line in final_ai_msg.split('\n'):
             line = line.strip()
-            # HANYA tangkap ayat yang dimulakan dengan @Caller secara eksplisit
+            # Only capture text explicitly generated for the user
             if line.lower().startswith('@caller'):
-                # Buang tag @Caller dan simbol markdown
                 clean_line = re.sub(r'^@caller[:,\s]*', '', line, flags=re.IGNORECASE)
                 clean_line = re.sub(r'[*#_]', '', clean_line)
                 reply_to_pwa.append(clean_line)
-                        
-        # FALLBACK LOGIC: If AI forgets the tag, return text but block system/internal tags
-        if not reply_to_pwa:
-            for line in final_ai_msg.split('\n'):
-                line_lower = line.strip().lower()
-                if not line_lower.startswith('@internal') and not line_lower.startswith('@agent_'):
-                    reply_to_pwa.append(re.sub(r'[*#_]', '', line.strip()))
         
         final_reply = " ".join(reply_to_pwa).strip()
+        
+        # If AI is performing technical tasks in the background and hasn't replied yet:
         if not final_reply:
-            final_reply = "Processing your request..."
+            final_reply = "CEKAP system is processing your report. Please wait a moment..."
             
         return {
             "status": "ACTIVE",
@@ -169,5 +206,5 @@ async def handle_chat(request: ChatRequest):
         logger.error(f"API Processing Error: {str(e)}")
         return {
             "status": "ERROR",
-            "reply": "Sorry, the CEKAP system encountered a network error. Please try again."
+            "reply": "Sorry, the CEKAP system encountered a network disruption. Please try again shortly."
         }
