@@ -14,6 +14,12 @@ from supabase import create_client
 from band.client.rest import AsyncRestClient, ChatRoomRequest, ParticipantRequest, ChatMessageRequest, ChatMessageRequestMentionsItem
 from thenvoi.config import load_agent_config
 
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
+from thenvoi import Agent
+from thenvoi.adapters import LangGraphAdapter
+from prompts import FIRST_RESPONDER_PROMPT
+
 from dispatcher_agent import main as dispatcher_main
 from geo_agent import main as geo_main
 from manager_agent import main as manager_main
@@ -24,6 +30,8 @@ from triage_agent import main as triage_main
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
+
+app = FastAPI()
 
 # ==========================================
 # 1. CREDENTIAL MANAGEMENT (LIKE WARROOM)
@@ -44,6 +52,9 @@ CEKAP_ROOM_ID = None
 first_responder_client = None
 processed_msg_ids = set()
 
+class ChatRequest(BaseModel):
+    message: str
+
 # ==========================================
 # 2. PHASE 1 & 2: PROGRAMMATIC SETUP (DETERMINISTIC)
 # ==========================================
@@ -56,13 +67,13 @@ async def build_cekap_infrastructure():
         fr_id, fr_key = AGENTS["first_responder"]
         first_responder_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
         
-        # [KEMASKINI: Guna Supabase untuk elak lambakan 'Ghost Rooms' setiap kali deploy]
+        # [UPDATE: Use Supabase to prevent 'Ghost Rooms' clutter on every deployment]
         supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
         try:
             res = supabase.table("emergency_logs").select("raw_location").eq("status", "ACTIVE_ROOM").execute()
             if res.data and len(res.data) > 0:
                 CEKAP_ROOM_ID = res.data[0]["raw_location"]
-                logger.info(f"Bilik sedia ada dijumpai. Sistem menggunakan semula bilik: {CEKAP_ROOM_ID}")
+                logger.info(f"Existing room found. System reusing room: {CEKAP_ROOM_ID}")
                 return
         except Exception:
             pass
@@ -72,7 +83,7 @@ async def build_cekap_infrastructure():
         CEKAP_ROOM_ID = resp.data.id
         logger.info(f"PHASE 1 SUCCESS: Operations Room created -> {CEKAP_ROOM_ID}")
         
-        # [KEMASKINI: Simpan ID bilik baharu ke Supabase untuk penggunaan akan datang]
+        # [UPDATE: Save new room ID to Supabase for future use]
         try:
             supabase.table("emergency_logs").insert({
                 "emergency_type": "SYSTEM", "priority_level": "N/A", 
@@ -98,30 +109,69 @@ async def build_cekap_infrastructure():
         logger.error(f"Failed to build infrastructure: {str(e)}")
 
 # ==========================================
-# 3. SERVER & BACKGROUND HANDLING
+# FIRST RESPONDER AI BRAIN FUNCTION
+# ==========================================
+async def first_responder_main():
+    agent_id, api_key = AGENTS["first_responder"]
+    llm = ChatOpenAI(
+        model="deepseek/deepseek-chat",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL"),
+        temperature=0.0
+    )
+    adapter = LangGraphAdapter(
+        llm=llm,
+        checkpointer=InMemorySaver(),
+        custom_section=FIRST_RESPONDER_PROMPT
+    )
+    logger.info("Connecting First Responder AI to the Band platform...")
+    agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
+    await agent.run()
+
+# ==========================================
+# 3. SERVER & BACKGROUND HANDLING (STAGGERED BOOT)
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Run agent scripts in the background so they 'Listen'
-    agent_tasks = [
-        asyncio.create_task(dispatcher_main()),
-        asyncio.create_task(geo_main()),
-        asyncio.create_task(manager_main()),
-        asyncio.create_task(medical_main()),
-        asyncio.create_task(triage_main())
-    ]
-    
     # Build the room and arrange the structure as soon as the server starts
     await build_cekap_infrastructure()
+    
+    agent_tasks = []
+    
+    async def start_agents_staggered():
+        logger.info("Starting agents in stages (Staggered Boot) to avoid WebSocket Timeout...")
+        
+        # Pause for 2 seconds for each agent so WebSocket traffic isn't congested
+        agent_tasks.append(asyncio.create_task(first_responder_main()))
+        await asyncio.sleep(2)
+        
+        agent_tasks.append(asyncio.create_task(manager_main()))
+        await asyncio.sleep(2)
+        
+        agent_tasks.append(asyncio.create_task(dispatcher_main()))
+        await asyncio.sleep(2)
+        
+        agent_tasks.append(asyncio.create_task(geo_main()))
+        await asyncio.sleep(2)
+        
+        agent_tasks.append(asyncio.create_task(medical_main()))
+        await asyncio.sleep(2)
+        
+        agent_tasks.append(asyncio.create_task(triage_main()))
+        
+        logger.info("✅ ALL AGENTS SUCCESSFULLY STARTED AND READY!")
+
+    # Start the staggered boot process
+    boot_task = asyncio.create_task(start_agents_staggered())
+    
     yield  
+    
+    boot_task.cancel()
     for task in agent_tasks:
         task.cancel()
 
+# Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-class ChatRequest(BaseModel):
-    message: str
 
 # ==========================================
 # 4. PHASE 3: PWA ENDPOINT USING REST
@@ -130,13 +180,13 @@ class ChatRequest(BaseModel):
 async def handle_chat(request: ChatRequest):
     global processed_msg_ids
     if not CEKAP_ROOM_ID or not first_responder_client:
-        return {"status": "ACTIVE", "reply": "Sistem sedang dimuatkan, sila tunggu..."}
+        return {"status": "ACTIVE", "reply": "System is loading, please wait..."}
 
     user_text = request.message.strip()
     
     try:
-        # 1. Hantar mesej pemanggil ke bilik menggunakan identiti Dispatcher (sebagai proxy sistem PWA)
-        # Ini memastikan ejen First Responder (LLM) membacanya sebagai mesej luar
+        # 1. Send the caller's message to the room using the Dispatcher identity (as a PWA system proxy)
+        # This ensures the First Responder agent (LLM) reads it as an external message
         disp_id, disp_key = AGENTS["dispatcher"]
         disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
         
@@ -151,7 +201,7 @@ async def handle_chat(request: ChatRequest):
             )
         )
         
-        # 2. Polling jawapan: Mengintai inbox mesej Band untuk Dispatcher (sebab First Responder diarah tag dispatcher untuk membalas caller)
+        # 2. Polling for answer: Monitoring Band message inbox for Dispatcher (because First Responder is instructed to tag dispatcher to reply to caller)
         for _ in range(15):
             await asyncio.sleep(2)
             try:
@@ -161,25 +211,25 @@ async def handle_chat(request: ChatRequest):
                     content = getattr(msg_data, "content", "")
                     msg_id = getattr(msg_data, "id", None)
                     
-                    # Tapis dengan ketat supaya HANYA mesej rasmi First Responder kepada pemanggil dipaparkan
+                    # Filter strictly so ONLY the official First Responder message to the caller is displayed
                     if content and msg_id not in processed_msg_ids and "@Caller" in content:
                         processed_msg_ids.add(msg_id)
                         
-                        # Bersihkan tag teknikal sebelum hantar ke fungsi TTS pengguna
+                        # Clean technical tags before sending to the user's TTS function
                         clean_reply = content.replace("@Caller", "").replace("@dispatcher", "").replace("@Dispatcher", "").replace("_", "").replace("*", "").strip()
                         
                         if "TERMINATE" in clean_reply.upper():
-                            return {"status": "TERMINATE_CALL", "reply": "Panggilan ditamatkan secara paksa."}
+                            return {"status": "TERMINATE_CALL", "reply": "Call terminated forcefully."}
                             
                         return {"status": "ACTIVE", "reply": clean_reply}
             except Exception:
-                pass # Teruskan polling jika tiada mesej baharu
+                pass # Continue polling if there are no new messages
 
-        return {"status": "ACTIVE", "reply": "Sistem sedang memproses maklumat dan menyelaras unit. Sila tunggu..."}
+        return {"status": "ACTIVE", "reply": "System is processing information and coordinating units. Please wait..."}
 
     except Exception as e:
         logger.error(f"Phase 3 Error: {str(e)}")
-        return {"status": "ERROR", "reply": "Sistem mengalami kesesakan rangkaian."}
+        return {"status": "ERROR", "reply": "System is experiencing network congestion."}
 
 if __name__ == "__main__":
     import uvicorn
