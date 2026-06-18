@@ -31,8 +31,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-app = FastAPI()
-
 # ==========================================
 # 1. CREDENTIAL MANAGEMENT (LIKE WARROOM)
 # ==========================================
@@ -52,9 +50,6 @@ CEKAP_ROOM_ID = None
 first_responder_client = None
 processed_msg_ids = set()
 
-class ChatRequest(BaseModel):
-    message: str
-
 # ==========================================
 # 2. PHASE 1 & 2: PROGRAMMATIC SETUP (DETERMINISTIC)
 # ==========================================
@@ -67,13 +62,13 @@ async def build_cekap_infrastructure():
         fr_id, fr_key = AGENTS["first_responder"]
         first_responder_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
         
-        # [UPDATE: Use Supabase to prevent 'Ghost Rooms' clutter on every deployment]
+        # [KEMASKINI: Guna Supabase untuk elak lambakan 'Ghost Rooms' setiap kali deploy]
         supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
         try:
             res = supabase.table("emergency_logs").select("raw_location").eq("status", "ACTIVE_ROOM").execute()
             if res.data and len(res.data) > 0:
                 CEKAP_ROOM_ID = res.data[0]["raw_location"]
-                logger.info(f"Existing room found. System reusing room: {CEKAP_ROOM_ID}")
+                logger.info(f"Bilik sedia ada dijumpai. Sistem menggunakan semula bilik: {CEKAP_ROOM_ID}")
                 return
         except Exception:
             pass
@@ -83,7 +78,7 @@ async def build_cekap_infrastructure():
         CEKAP_ROOM_ID = resp.data.id
         logger.info(f"PHASE 1 SUCCESS: Operations Room created -> {CEKAP_ROOM_ID}")
         
-        # [UPDATE: Save new room ID to Supabase for future use]
+        # [KEMASKINI: Simpan ID bilik baharu ke Supabase untuk penggunaan akan datang]
         try:
             supabase.table("emergency_logs").insert({
                 "emergency_type": "SYSTEM", "priority_level": "N/A", 
@@ -109,7 +104,7 @@ async def build_cekap_infrastructure():
         logger.error(f"Failed to build infrastructure: {str(e)}")
 
 # ==========================================
-# FIRST RESPONDER AI BRAIN FUNCTION
+# FUNGSI OTAK AI FIRST RESPONDER
 # ==========================================
 async def first_responder_main():
     agent_id, api_key = AGENTS["first_responder"]
@@ -124,7 +119,7 @@ async def first_responder_main():
         checkpointer=InMemorySaver(),
         custom_section=FIRST_RESPONDER_PROMPT
     )
-    logger.info("Connecting First Responder AI to the Band platform...")
+    logger.info("Menghubungkan AI First Responder ke platform Band...")
     agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
     await agent.run()
 
@@ -133,15 +128,15 @@ async def first_responder_main():
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Build the room and arrange the structure as soon as the server starts
+    # Bina bilik dan aturkan struktur sebaik sahaja pelayan hidup
     await build_cekap_infrastructure()
     
     agent_tasks = []
     
     async def start_agents_staggered():
-        logger.info("Starting agents in stages (Staggered Boot) to avoid WebSocket Timeout...")
+        logger.info("Menghidupkan ejen secara berperingkat (Staggered Boot) untuk mengelakkan WebSocket Timeout...")
         
-        # Pause for 2 seconds for each agent so WebSocket traffic isn't congested
+        # Jeda 2 saat bagi setiap ejen supaya trafik WebSocket tidak sesak
         agent_tasks.append(asyncio.create_task(first_responder_main()))
         await asyncio.sleep(2)
         
@@ -159,9 +154,9 @@ async def lifespan(app: FastAPI):
         
         agent_tasks.append(asyncio.create_task(triage_main()))
         
-        logger.info("✅ ALL AGENTS SUCCESSFULLY STARTED AND READY!")
+        logger.info("✅ SEMUA EJEN BERJAYA DIHIDUPKAN DAN BERSEDIA!")
 
-    # Start the staggered boot process
+    # Mulakan proses but berperingkat
     boot_task = asyncio.create_task(start_agents_staggered())
     
     yield  
@@ -170,9 +165,6 @@ async def lifespan(app: FastAPI):
     for task in agent_tasks:
         task.cancel()
 
-# Initialize FastAPI app with lifespan
-app = FastAPI(lifespan=lifespan)
-
 # ==========================================
 # 4. PHASE 3: PWA ENDPOINT USING REST
 # ==========================================
@@ -180,13 +172,13 @@ app = FastAPI(lifespan=lifespan)
 async def handle_chat(request: ChatRequest):
     global processed_msg_ids
     if not CEKAP_ROOM_ID or not first_responder_client:
-        return {"status": "ACTIVE", "reply": "System is loading, please wait..."}
+        return {"status": "ACTIVE", "reply": "Sistem sedang dimuatkan, sila tunggu..."}
 
     user_text = request.message.strip()
     
     try:
-        # 1. Send the caller's message to the room using the Dispatcher identity (as a PWA system proxy)
-        # This ensures the First Responder agent (LLM) reads it as an external message
+        # 1. Hantar mesej pemanggil ke bilik menggunakan identiti Dispatcher (sebagai proxy sistem PWA)
+        # Ini memastikan ejen First Responder (LLM) membacanya sebagai mesej luar
         disp_id, disp_key = AGENTS["dispatcher"]
         disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
         
@@ -201,7 +193,7 @@ async def handle_chat(request: ChatRequest):
             )
         )
         
-        # 2. Polling for answer: Monitoring Band message inbox for Dispatcher (because First Responder is instructed to tag dispatcher to reply to caller)
+        # 2. Polling jawapan: Mengintai inbox mesej Band untuk Dispatcher (sebab First Responder diarah tag dispatcher untuk membalas caller)
         for _ in range(15):
             await asyncio.sleep(2)
             try:
@@ -211,25 +203,25 @@ async def handle_chat(request: ChatRequest):
                     content = getattr(msg_data, "content", "")
                     msg_id = getattr(msg_data, "id", None)
                     
-                    # Filter strictly so ONLY the official First Responder message to the caller is displayed
+                    # Tapis dengan ketat supaya HANYA mesej rasmi First Responder kepada pemanggil dipaparkan
                     if content and msg_id not in processed_msg_ids and "@Caller" in content:
                         processed_msg_ids.add(msg_id)
                         
-                        # Clean technical tags before sending to the user's TTS function
+                        # Bersihkan tag teknikal sebelum hantar ke fungsi TTS pengguna
                         clean_reply = content.replace("@Caller", "").replace("@dispatcher", "").replace("@Dispatcher", "").replace("_", "").replace("*", "").strip()
                         
                         if "TERMINATE" in clean_reply.upper():
-                            return {"status": "TERMINATE_CALL", "reply": "Call terminated forcefully."}
+                            return {"status": "TERMINATE_CALL", "reply": "Panggilan ditamatkan secara paksa."}
                             
                         return {"status": "ACTIVE", "reply": clean_reply}
             except Exception:
-                pass # Continue polling if there are no new messages
+                pass # Teruskan polling jika tiada mesej baharu
 
-        return {"status": "ACTIVE", "reply": "System is processing information and coordinating units. Please wait..."}
+        return {"status": "ACTIVE", "reply": "Sistem sedang memproses maklumat dan menyelaras unit. Sila tunggu..."}
 
     except Exception as e:
         logger.error(f"Phase 3 Error: {str(e)}")
-        return {"status": "ERROR", "reply": "System is experiencing network congestion."}
+        return {"status": "ERROR", "reply": "Sistem mengalami kesesakan rangkaian."}
 
 if __name__ == "__main__":
     import uvicorn
