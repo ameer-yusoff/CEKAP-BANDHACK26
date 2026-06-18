@@ -169,7 +169,11 @@ async def handle_chat(request: ChatRequest):
             logger.info("SYSTEM OVERRIDE: Bypassing Band API. Using Local Memory Handoff to trigger Manager Agent...")
             
             handoff_msg = HumanMessage(
-                content=f"SYSTEM ALERT: Emergency escalated from First Responder. The caller has initiated contact. Initial context: {user_text}. Please coordinate with @triage_diagnoser and @geo_specialist immediately."
+                content=f"SYSTEM ALERT: Emergency escalated from First Responder. Initial context: {user_text}. "
+                        f"ACTION REQUIRED NOW: "
+                        f"1. Use 'thenvoi_create_chatroom' tool to create a room named 'Emergency Incident'. "
+                        f"2. Use 'thenvoi_add_participant' tool to add @triage_diagnoser, @geo_specialist, @medical_agent, and @dispatcher to that room. "
+                        f"3. Use 'thenvoi_send_message' tool to send the emergency details and tag @triage_diagnoser and @geo_specialist in that room to start processing."
             )
             
             from prompts import MANAGER_PROMPT

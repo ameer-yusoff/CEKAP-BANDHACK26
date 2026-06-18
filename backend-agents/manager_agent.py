@@ -29,6 +29,7 @@ def terminate_session(reason: str) -> str:
 
 load_dotenv()
 
+# 1. LLM INITIALIZATION
 llm = ChatOpenAI(
     model="o3-mini",
     api_key=os.getenv("OPENAI_API_KEY"),
@@ -36,25 +37,39 @@ llm = ChatOpenAI(
     temperature=0.0
 )
 
-manager_react_agent = create_react_agent(llm, tools=[terminate_session])
-# --------------------------------------------------------
+# 2. Create the Band Agent for the Manager with the terminate_session tool
+agent_id, api_key = load_agent_config("agent_manager")
+adapter = LangGraphAdapter(
+    llm=llm,
+    checkpointer=InMemorySaver(),
+    additional_tools=[terminate_session],
+    custom_section=MANAGER_PROMPT
+)
+
+manager_band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
+
+# 3. Extract the authenticated tools from the adapter
+manager_tools = []
+for attr in ['tools', '_tools', 'platform_tools']:
+    if hasattr(adapter, attr):
+        val = getattr(adapter, attr)
+        if isinstance(val, list):
+            manager_tools.extend(val)
+            break
+
+if not manager_tools and hasattr(adapter, 'get_tools') and callable(adapter.get_tools):
+    tools_res = adapter.get_tools()
+    manager_tools.extend(tools_res if isinstance(tools_res, list) else [tools_res])
+
+if terminate_session not in manager_tools:
+    manager_tools.append(terminate_session)
+
+# 4. Create a React Agent for the Manager to handle tool execution
+manager_react_agent = create_react_agent(llm, tools=manager_tools)
 
 async def main():
-    agent_id, api_key = load_agent_config("agent_manager")
-    
-    adapter = LangGraphAdapter(
-        llm=llm,
-        checkpointer=InMemorySaver(),
-        additional_tools=[terminate_session],
-        custom_section=MANAGER_PROMPT
-    )
-    
     logger.info("Connecting Agent Manager to the Band platform...")
-    agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
-    await agent.run()
+    await manager_band_agent.run()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Agent Manager stopped.")
+    asyncio.run(main())
