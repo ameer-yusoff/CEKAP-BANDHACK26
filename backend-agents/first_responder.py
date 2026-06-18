@@ -53,12 +53,19 @@ adapter = LangGraphAdapter(
 
 band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 
-# AGGRESSIVE TOOL EXTRACTION
+# IMPROVED AGGRESSIVE TOOL EXTRACTION
 band_tools = []
 for obj in [adapter, band_agent]:
-    for attr in ['tools', '_tools', 'platform_tools', 'additional_tools']:
+    # Added 'get_tools' to check if tools are hidden behind a callable function
+    for attr in ['tools', '_tools', 'get_tools', 'platform_tools', 'additional_tools']:
         if hasattr(obj, attr):
             val = getattr(obj, attr)
+            # If the attribute is a method, invoke it to retrieve the list
+            if callable(val):
+                try:
+                    val = val()
+                except Exception:
+                    continue
             if isinstance(val, list):
                 band_tools.extend(val)
 
@@ -73,35 +80,40 @@ react_agent = create_react_agent(llm, tools=final_tools)
 chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
 is_room_setup = False
 
+
 # ==========================================
-# 2. PROGRAMMATIC ROOM SETUP (VIA SDK TOOLS)
+# 2. PROGRAMMATIC ROOM SETUP (DYNAMIC DISCOVERY)
 # ==========================================
 async def programmatic_room_setup() -> str:
     """
-    Execute room setup process by calling SDK Tools directly in the background.
-    100% free from authentication errors because it uses the built-in Thenvoi adapter.
+    Execute room setup process by dynamically discovering SDK tools.
+    This prevents hardcoded naming mismatch errors.
     """
-    logger.info("SYSTEM OVERRIDE: Starting Programmatic Room Setup via SDK Tools...")
+    logger.info("SYSTEM OVERRIDE: Starting Programmatic Room Setup via Dynamic SDK Tools...")
     try:
-        # Get tool references directly from unique_tools variable
-        create_tool = unique_tools.get("thenvoi_create_chatroom")
-        add_tool = unique_tools.get("thenvoi_add_participant")
-        send_tool = unique_tools.get("thenvoi_send_message")
+        # Dynamically search for tools using keywords to bypass exact naming requirements
+        create_tool = next((t for t in final_tools if "create" in t.name.lower() and "chat" in t.name.lower()), None)
+        add_tool = next((t for t in final_tools if "add" in t.name.lower() and "participant" in t.name.lower()), None)
+        send_tool = next((t for t in final_tools if "send" in t.name.lower() and "message" in t.name.lower()), None)
 
+        # Safety check: log available tools if extraction fails
         if not all([create_tool, add_tool, send_tool]):
-            logger.error("Fatal Error: Thenvoi tools not found in memory!")
+            available_names = [getattr(t, 'name', 'Unknown') for t in final_tools]
+            logger.error(f"Fatal Error: Required tools not found! Available tools in memory are: {available_names}")
             return None
 
         # Step 1: Create Room
-        logger.info("Step 1: Creating room...")
+        logger.info(f"Step 1: Creating room using dynamically found tool '{create_tool.name}'...")
         try:
-            # Call built-in Langchain tool from SDK
             room_res = await create_tool.ainvoke({"name": "Emergency Incident"})
         except Exception:
-            # Fallback if tool doesn't accept any parameter
-            room_res = await create_tool.ainvoke({})
+            try:
+                room_res = await create_tool.ainvoke({})
+            except Exception as e:
+                logger.error(f"Failed to invoke create_tool: {str(e)}")
+                return None
         
-        # Extract room ID (UUID) from text/JSON response
+        # Extract room ID (UUID) robustly via Regex
         chat_id = None
         match = re.search(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', str(room_res))
         if match:
@@ -116,25 +128,23 @@ async def programmatic_room_setup() -> str:
         # Step 2: Add Participants
         participants = ["agent_manager", "triage_diagnoser", "geo_specialist", "medical_agent", "dispatcher"]
         for p in participants:
-            logger.info(f"Step 2: Adding participant {p}...")
+            logger.info(f"Step 2: Adding participant {p} using tool '{add_tool.name}'...")
             try:
                 await add_tool.ainvoke({"chat_id": chat_id, "username": p})
             except Exception:
-                # Fallback if SDK uses different parameter name (e.g., 'participant')
                 try:
                     await add_tool.ainvoke({"chat_id": chat_id, "participant": p})
                 except Exception:
                     pass
             
         # Step 3: Send Trigger Message
-        logger.info("Step 3: Sending trigger message to @agent_manager...")
+        logger.info(f"Step 3: Sending trigger message using tool '{send_tool.name}'...")
         try:
             await send_tool.ainvoke({
                 "chat_id": chat_id,
                 "text": "@agent_manager System Online. Ready for triage."
             })
         except Exception:
-            # Fallback if SDK uses 'message' parameter name
             try:
                 await send_tool.ainvoke({
                     "chat_id": chat_id,
@@ -143,11 +153,11 @@ async def programmatic_room_setup() -> str:
             except Exception:
                 pass
         
-        logger.info("Programmatic setup via SDK Tools completed successfully.")
+        logger.info("Programmatic setup via Dynamic SDK Tools completed successfully.")
         return chat_id
         
     except Exception as e:
-        logger.error(f"SDK Tool Setup Error: {str(e)}")
+        logger.error(f"SDK Tool Dynamic Setup Error: {str(e)}")
         return None
 
 # ==========================================
