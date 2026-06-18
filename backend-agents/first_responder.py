@@ -53,7 +53,7 @@ band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 # Global variables
 last_message_timestamp = time.time()
 # Pull Static Chat Room ID from Environment (Render)
-BAND_CHAT_ID = os.getenv("BAND_CHAT_ID")
+BAND_CHAT_ID = "0ba97885-a5e2-4387-ba01-405f0b988941"
 
 # ==========================================
 # 2. FASTAPI SERVER SETUP
