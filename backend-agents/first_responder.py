@@ -126,16 +126,26 @@ async def programmatic_room_setup() -> str:
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting all CEKAP agents in the background...")
-    agent_tasks = [
-        asyncio.create_task(band_agent.run()),
-        asyncio.create_task(dispatcher_main()),
-        asyncio.create_task(geo_main()),
-        asyncio.create_task(manager_main()),
-        asyncio.create_task(medical_main()),
-        asyncio.create_task(triage_main())
-    ]
-    yield
+    logger.info("FastAPI is starting... Allowing port binding to complete first.")
+    agent_tasks = []
+    
+    async def start_background_agents():
+        await asyncio.sleep(5) 
+        logger.info("5 seconds passed. Starting all CEKAP agents in the background NOW...")
+        agent_tasks.extend([
+            asyncio.create_task(band_agent.run()),
+            asyncio.create_task(dispatcher_main()),
+            asyncio.create_task(geo_main()),
+            asyncio.create_task(manager_main()),
+            asyncio.create_task(medical_main()),
+            asyncio.create_task(triage_main())
+        ])
+
+    boot_task = asyncio.create_task(start_background_agents())
+    
+    yield  
+    
+    boot_task.cancel()
     for task in agent_tasks:
         task.cancel()
 
