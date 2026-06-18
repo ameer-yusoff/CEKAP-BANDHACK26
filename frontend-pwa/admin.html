@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CEKAP - Command Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        :root {
+            --bg-dark: #0B0F19;
+            --text-primary: #FFFFFF;
+            --text-secondary: #8B949E;
+            --danger-red: #FF4D4D;
+        }
+
+        body {
+            margin: 0;
+            padding: 2rem;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+        }
+
+        .dashboard-header {
+            margin-bottom: 2rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 1rem;
+        }
+
+        .glass-table-container {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 1rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+            cursor: pointer;
+        }
+        
+        th:hover {
+            color: var(--text-primary);
+        }
+
+        td {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 0.9rem;
+        }
+
+        .priority-P1 { color: var(--danger-red); font-weight: bold; }
+        .priority-P2 { color: #FFA500; }
+        .priority-P3 { color: #FFFF00; }
+        
+        a.map-link {
+            color: #58A6FF;
+            text-decoration: none;
+        }
+        a.map-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard-header">
+        <h1>CEKAP Command Center</h1>
+        <p style="color: var(--text-secondary)">Real-time Multi-Agent Emergency Logs</p>
+    </div>
+
+    <div class="glass-table-container">
+        <table id="logsTable">
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">ID ↕</th>
+                    <th onclick="sortTable(1)">Emergency Type ↕</th>
+                    <th onclick="sortTable(2)">Priority ↕</th>
+                    <th>Location</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                </tbody>
+        </table>
+    </div>
+
+    <script>
+        const supabaseUrl = 'YOUR_SUPABASE_URL';
+        const supabaseKey = 'YOUR_SUPABASE_ANON_KEY';
+        const supabase = supabaseClient.createClient(supabaseUrl, supabaseKey);
+
+        async function fetchLogs() {
+            const { data, error } = await supabase
+                .from('emergency_logs')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (error) {
+                console.error('Error fetching logs:', error);
+                return;
+            }
+
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = '';
+
+            data.forEach(log => {
+                const tr = document.createElement('tr');
+                const mapLink = log.maps_link ? `<a href="${log.maps_link}" class="map-link" target="_blank">${log.raw_location}</a>` : log.raw_location;
+                
+                tr.innerHTML = `
+                    <td style="color: var(--text-secondary)">#${log.id}</td>
+                    <td>${log.emergency_type}</td>
+                    <td class="priority-${log.priority_level}">${log.priority_level}</td>
+                    <td>${mapLink}</td>
+                    <td>${log.status}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function sortTable(n) {
+            var table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
+            table = document.getElementById("logsTable");
+            switching = true;
+            dir = "asc"; 
+            while (switching) {
+                switching = false;
+                rows = table.rows;
+                for (i = 1; i < (rows.length - 1); i++) {
+                    shouldSwitch = false;
+                    x = rows[i].getElementsByTagName("TD")[n];
+                    y = rows[i + 1].getElementsByTagName("TD")[n];
+                    if (dir == "asc") {
+                        if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) {
+                            shouldSwitch = true;
+                            break;
+                        }
+                    } else if (dir == "desc") {
+                        if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) {
+                            shouldSwitch = true;
+                            break;
+                        }
+                    }
+                }
+                if (shouldSwitch) {
+                    rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+                    switching = true;
+                    switchcount ++; 
+                } else {
+                    if (switchcount == 0 && dir == "asc") {
+                        dir = "desc";
+                        switching = true;
+                    }
+                }
+            }
+        }
+
+        fetchLogs();
+        setInterval(fetchLogs, 5000);
+    </script>
+</body>
+</html>
