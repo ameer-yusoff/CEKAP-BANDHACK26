@@ -119,8 +119,8 @@ async def handle_chat(request: ChatRequest):
 
     try:        
         if not is_room_setup:
-            logger.info("SYSTEM OVERRIDE: Force AI to build room automatically via code...")
-            setup_cmd = HumanMessage(content="SYSTEM DIRECTIVE: 1. Execute 'thenvoi_create_chatroom'. 2. Execute 'thenvoi_add_participant' to add @agent_manager, @triage_diagnoser, @geo_specialist, @medical_agent, @dispatcher to that room. 3. Execute 'thenvoi_send_message' to say '@agent_manager System Online' in that room. Execute tools NOW without asking questions.")
+            logger.info("SYSTEM OVERRIDE: Building room automatically via safe tool commands...")
+            setup_cmd = HumanMessage(content="Hello. We are starting a new emergency session. Please safely execute your tools to complete these 3 setup steps sequentially:\n1. Create a new chatroom for this incident.\n2. Add these exact participants to the room: @agent_manager, @triage_diagnoser, @geo_specialist, @medical_agent, and @dispatcher.\n3. Send a message to the room saying exactly: '@agent_manager System Online. Ready for triage.'")
             
             # Execute tool operations behind the scenes first
             setup_res = await react_agent.ainvoke({"messages": chat_memory + [setup_cmd]})
