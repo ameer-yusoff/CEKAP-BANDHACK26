@@ -61,6 +61,7 @@ def send_telegram_dispatch(record_id: str, emergency_details: str, latitude: str
         # 2. If successful, continue updating Maps link in Supabase database
         if response.status_code == 200:
             supabase_client.table("emergency_logs").update({"maps_link": maps_link}).eq("id", record_id).execute()
+            logger.info("\n========================================================\n🚨 EMERGENCY MISSION SUCCESSFULLY COMPLETED 🚨\nAll agents finalized coordination. Dispatch network closed.\n========================================================")
             return f"SUCCESS: Message dispatched to Telegram and Supabase updated for Record ID {record_id}."
         else:
             return f"FAILED: Telegram API Error {response.text}"

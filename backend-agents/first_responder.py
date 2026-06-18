@@ -157,8 +157,8 @@ async def handle_chat(request: ChatRequest):
                 resp = await first_responder_client.agent_api_messages.get_agent_next_message(CEKAP_ROOM_ID)
                 content = getattr(getattr(resp, "data", None), "content", None)
                 
-                if content:
-                    clean_reply = content.replace("@Caller", "").replace("@First_Responder", "").replace("@first_responder", "").replace("_", "").replace("*", "").strip()
+                if content and any(tag in content for tag in ["@Caller", "@First_Responder", "@first_responder"]):
+                    clean_reply = content.replace("@Caller", "").replace("@First_Responder", "").replace("@first_responder", "").replace("Please relay these steps to the caller:", "").replace("_", "").replace("*", "").strip()
                     
                     if "TERMINATE" in clean_reply.upper():
                         return {"status": "TERMINATE_CALL", "reply": "Panggilan ditamatkan secara paksa."}
