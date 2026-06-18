@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import create_react_agent  
+from langchain_core.messages import SystemMessage
 from thenvoi import Agent
 from thenvoi.adapters import LangGraphAdapter
 from thenvoi.config import load_agent_config
@@ -25,16 +27,20 @@ def terminate_session(reason: str) -> str:
     logger.info(f"SESSION TERMINATED BY MANAGER: {reason}")
     return f"SYSTEM_ACTION: TERMINATE_CALL. Reason: {reason}."
 
+load_dotenv()
+
+llm = ChatOpenAI(
+    model="o3-mini",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL"),
+    temperature=0.0
+)
+
+manager_react_agent = create_react_agent(llm, tools=[terminate_session])
+# --------------------------------------------------------
+
 async def main():
-    load_dotenv()
     agent_id, api_key = load_agent_config("agent_manager")
-    
-    llm = ChatOpenAI(
-        model="o3-mini",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
-        temperature=0.0
-    )
     
     adapter = LangGraphAdapter(
         llm=llm,

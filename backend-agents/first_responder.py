@@ -26,6 +26,7 @@ from prompts import FIRST_RESPONDER_PROMPT
 from dispatcher_agent import main as dispatcher_main
 from geo_agent import main as geo_main
 from manager_agent import main as manager_main
+from manager_agent import manager_react_agent
 from medical_agent import main as medical_main
 from triage_agent import main as triage_main
 
@@ -164,13 +165,22 @@ async def handle_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:        
-        # Wake up Band platform ONLY on the very first incoming message
         if not is_band_triggered:
-            asyncio.create_task(trigger_band_platform(user_text))
+            logger.info("SYSTEM OVERRIDE: Bypassing Band API. Using Local Memory Handoff to trigger Manager Agent...")
+            
+            handoff_msg = HumanMessage(
+                content=f"SYSTEM ALERT: Emergency escalated from First Responder. The caller has initiated contact. Initial context: {user_text}. Please coordinate with @triage_diagnoser and @geo_specialist immediately."
+            )
+            
+            from prompts import MANAGER_PROMPT
+            asyncio.create_task(manager_react_agent.ainvoke({
+                "messages": [SystemMessage(content=MANAGER_PROMPT), handoff_msg]
+            }))
+            
             is_band_triggered = True
 
         chat_memory.append(HumanMessage(content=user_text))
-        logger.info("Processing caller input via local DeepSeek...")
+        logger.info("Processing caller input...")
         
         response = await react_agent.ainvoke({"messages": chat_memory})
         chat_memory = response["messages"]
