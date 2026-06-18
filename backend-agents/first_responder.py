@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import httpx
+import time
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException
@@ -156,62 +157,82 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
 
+import time
+
+# Ensure this chat_id is the main room where all agents operate
+BAND_CHAT_ID = "c8c29c5a-dd66-4e7f-91c9-a9a12a353933" 
+last_message_timestamp = time.time() # Track new messages
+
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
-    global chat_memory, is_band_triggered
-    
+    global last_message_timestamp
     user_text = request.message.strip()
+    
     if not user_text:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    try:        
-        if not is_band_triggered:
-            logger.info("SYSTEM OVERRIDE: Bypassing Band API. Using Local Memory Handoff to trigger Manager Agent...")
-            
-            handoff_msg = HumanMessage(
-                content=f"SYSTEM ALERT: Emergency escalated from First Responder. Initial context: {user_text}. "
-                        f"ACTION REQUIRED NOW: "
-                        f"1. Use 'thenvoi_create_chatroom' tool to create a room named 'Emergency Incident'. "
-                        f"2. Use 'thenvoi_add_participant' tool to add @triage_diagnoser, @geo_specialist, @medical_agent, and @dispatcher to that room. "
-                        f"3. Use 'thenvoi_send_message' tool to send the emergency details and tag @triage_diagnoser and @geo_specialist in that room to start processing."
+    headers = {
+        "Authorization": f"Bearer {api_key}", # Use first_responder api_key
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            # 1. Send caller message to Band Room
+            # We put @first_responder so this agent knows the caller is talking to it
+            payload = {
+                "text": f"@first_responder [Caller Input]: {user_text}"
+            }
+            send_res = await client.post(
+                f"https://app.thenvoi.com/api/v1/agent/chats/{BAND_CHAT_ID}/messages", 
+                headers=headers, 
+                json=payload
             )
             
-            from prompts import MANAGER_PROMPT
-            asyncio.create_task(manager_react_agent.ainvoke({
-                "messages": [SystemMessage(content=MANAGER_PROMPT), handoff_msg]
-            }))
-            
-            is_band_triggered = True
+            if send_res.status_code not in [200, 201]:
+                return {"status": "ERROR", "reply": "Failed to connect to main emergency server."}
 
-        chat_memory.append(HumanMessage(content=user_text))
-        logger.info("Processing caller input...")
-        
-        response = await react_agent.ainvoke({"messages": chat_memory})
-        chat_memory = response["messages"]
-        final_ai_msg = chat_memory[-1].content
-        
-        # Strict parsing logic
-        reply_to_pwa = []
-        for line in final_ai_msg.split('\n'):
-            line = line.strip()
-            if line.lower().startswith('@caller'):
-                clean_line = re.sub(r'^@caller[:,\s]*', '', line, flags=re.IGNORECASE)
-                clean_line = re.sub(r'[*#_]', '', clean_line)
-                reply_to_pwa.append(clean_line)
-        
-        final_reply = " ".join(reply_to_pwa).strip()
-        
-        if not final_reply:
-            final_reply = "Sistem CEKAP sedang memproses laporan anda. Sila tunggu sebentar..."
+            # 2. Polling Mechanism: Wait for response from First Responder to return to PWA
+            logger.info("Waiting for response from Band Platform...")
             
-        return {
-            "status": "ACTIVE",
-            "reply": final_reply
-        }
-        
+            for _ in range(15): # Polling for ~30 seconds (15 x 2 seconds)
+                await asyncio.sleep(2)
+                
+                # Pull latest messages from the room
+                chat_res = await client.get(
+                    f"https://app.thenvoi.com/api/v1/agent/chats/{BAND_CHAT_ID}/messages", 
+                    headers=headers
+                )
+                
+                if chat_res.status_code == 200:
+                    messages = chat_res.json().get("data", [])
+                    if messages:
+                        # Ambil mesej paling terkini
+                        latest_msg = messages[0] 
+                        msg_text = latest_msg.get("text", "")
+                        
+                        # Check if this message is a new response for Caller
+                        # Condition: Text contains '@Caller' (as per your prompt)
+                        if "@Caller" in msg_text and latest_msg.get("created_at_timestamp", 0) > last_message_timestamp:
+                            
+                            last_message_timestamp = time.time() # Update timestamp
+                            
+                            # Clean tag before sending to PWA (for Text-to-Speech)
+                            clean_reply = re.sub(r'^@Caller[:,\s]*', '', msg_text, flags=re.IGNORECASE).strip()
+                            clean_reply = re.sub(r'[*#_]', '', clean_reply)
+                            
+                            # If agent terminates call (e.g., fake call detected)
+                            if "TERMINATE" in clean_reply.upper():
+                                return {"status": "TERMINATE_CALL", "reply": "Call terminated."}
+                                
+                            return {"status": "ACTIVE", "reply": clean_reply}
+
+            # If no response after 30 seconds (agent is busy coordinating with other agents)
+            return {
+                "status": "ACTIVE",
+                "reply": "System is coordinating your information with rescue team. Please continue..."
+            }
+
     except Exception as e:
         logger.error(f"API Processing Error: {str(e)}")
-        return {
-            "status": "ERROR",
-            "reply": "Harap maaf, sistem CEKAP menghadapi gangguan rangkaian. Sila cuba sebentar lagi."
-        }
+        return {"status": "ERROR", "reply": "CEKAP system is experiencing network disruption."}

@@ -65,8 +65,6 @@ if terminate_session not in manager_tools:
     manager_tools.append(terminate_session)
 
 # 4. Create a React Agent for the Manager to handle tool execution
-manager_react_agent = create_react_agent(llm, tools=manager_tools)
-
 async def main():
     logger.info("Connecting Agent Manager to the Band platform...")
     await manager_band_agent.run()
