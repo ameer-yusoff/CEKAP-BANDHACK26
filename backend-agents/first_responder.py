@@ -10,9 +10,11 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
-from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.messages import SystemMessage, HumanMessage
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import tool
+
 from thenvoi import Agent
 from thenvoi.adapters import LangGraphAdapter
 from thenvoi.config import load_agent_config
@@ -24,116 +26,111 @@ from manager_agent import main as manager_main
 from medical_agent import main as medical_main
 from triage_agent import main as triage_main
 
-# Konfigurasi Log (Matang & Realistik untuk Pemantauan)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
 # ==========================================
-# INISIALISASI TERAS (CORE INITIALIZATION)
+# 1. BAND ADAPTER (WEBSOCKET BRIDGE)
 # ==========================================
 agent_id, api_key = load_agent_config("first_responder")
 
-llm = ChatOpenAI(
-    model="deepseek/deepseek-chat", # AI/ML API
+band_llm = ChatOpenAI(
+    model="deepseek/deepseek-chat",
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     temperature=0.0 
 )
 
+# This adapter no longer serves callers, but acts as an "invisible hand"
+# to execute Band tools from within the server.
 adapter = LangGraphAdapter(
-    llm=llm,
+    llm=band_llm,
     checkpointer=InMemorySaver(),
-    custom_section=FIRST_RESPONDER_PROMPT
+    custom_section="SYSTEM: You are the backend bridge to the Band platform. You must execute Band tools strictly when instructed by the local system."
 )
 
 band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 
-# Pembolehubah Kawalan Global
-local_react_agent = None
-chat_memory = []
-is_setup_complete = False
-
 # ==========================================
-# FASA 1 & 2: SETUP BERPROGRAM (PROGRAMMATIC)
+# 2. PHASE 3: PWA ENGINE (FAST & 401-FREE)
 # ==========================================
-async def execute_programmatic_setup():
-    global local_react_agent, chat_memory, is_setup_complete
-    
-    # Tunggu pengesahan WebSocket Band menyuntik tools ke dalam memori
-    logger.info("Menyegerakkan SDK Band (Mengambil masa 5-8 saat)...")
-    await asyncio.sleep(8)
-    
-    # Mengekstrak tools secara berprogram daripada adapter
-    band_tools = []
-    for attr in ['tools', '_tools', 'platform_tools']:
-        if hasattr(adapter, attr):
-            val = getattr(adapter, attr)
-            if isinstance(val, list):
-                band_tools.extend(val)
-    
-    if hasattr(adapter, 'get_tools') and callable(adapter.get_tools):
-        t = adapter.get_tools()
-        band_tools.extend(t if isinstance(t, list) else [t])
-
-    # Menyaring tools untuk mengelakkan duplikasi fungsi
-    unique_tools = {t.name: t for t in band_tools}.values()
-    tool_names = [t.name for t in unique_tools]
-    logger.info(f"Modul Band diekstrak dengan jayanya: {tool_names}")
-
-    # Membina 'Local Orchestrator' menggunakan alat yang telah disahkan
-    local_react_agent = create_react_agent(llm, tools=list(unique_tools))
-    
-    sys_msg = SystemMessage(content=FIRST_RESPONDER_PROMPT)
-    chat_memory = [sys_msg]
-    
-    # Menjalankan FASA 1 (Cipta Bilik) & FASA 2 (Masukkan Ejen) secara programatik
-    setup_instruction = """
-    SYSTEM OVERRIDE - PROGRAMMATIC EXECUTION:
-    You must prepare the Band environment immediately using your tools.
-    Step 1: Use 'thenvoi_create_chatroom' to create a room named "CEKAP Operation Center".
-    Step 2: Use 'thenvoi_add_participant' to add exactly these agents into the room:
-    - @agent_manager
-    - @triage_diagnoser
-    - @geo_specialist
-    - @medical_agent
-    - @dispatcher
-    
-    Do not ask questions. Reply 'SETUP_SUCCESS' when done.
-    """
+# This custom tool allows the local caller agent (Local PWA Agent) 
+# to send official reports into the Band ecosystem.
+@tool
+async def dispatch_to_band_network(emergency_summary: str) -> str:
+    """CRITICAL: Use this tool ONLY when you have obtained the emergency type and location. Send that information to the Band Network (@agent_manager)."""
+    logger.info("PHASE 3: Extracting report and sending to the Band platform...")
     
     try:
-        logger.info("Melaksanakan Automasi FASA 1 & FASA 2...")
-        res = await local_react_agent.ainvoke({"messages": [sys_msg, HumanMessage(content=setup_instruction)]})
-        logger.info(f"Status Infrastruktur: {res['messages'][-1].content}")
-        is_setup_complete = True
+        # Programmatically extracting the LangGraph graph compiled by the Band SDK
+        band_graph = getattr(adapter, 'app', getattr(adapter, 'graph', None))
+        if band_graph:
+            # Forcing WebSocket execution to communicate with the manager agent
+            await band_graph.ainvoke({
+                "messages": [HumanMessage(content=f"SYSTEM OVERRIDE: Use the 'thenvoi_send_message' tool now to send this information to @agent_manager : {emergency_summary}")]
+            }, config={"configurable": {"thread_id": "cekap_bridge_thread"}})
+            return "SUCCESS: Report successfully channeled to the Band rescue team."
     except Exception as e:
-        logger.error(f"Ralat Eksekusi Setup Berprogram: {e}")
+        logger.error(f"Band Bridge Error: {e}")
+        return "FAILED: Failed to connect with the Band Network infrastructure."
+
+# Local agent specifically for PWA smoothness
+pwa_llm = ChatOpenAI(
+    model="deepseek/deepseek-chat",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL"),
+    temperature=0.0
+)
+pwa_agent = create_react_agent(pwa_llm, tools=[dispatch_to_band_network])
+chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
 
 # ==========================================
-# SERVER FASTAPI & PENGURUSAN LATAR BELAKANG
+# 3. PHASE 1 & 2: AUTOMATIC PROGRAMMATIC SETUP
+# ==========================================
+async def setup_band_infrastructure():
+    # Waiting for Band WebSocket authentication to inject tools (5 seconds)
+    await asyncio.sleep(5) 
+    logger.info("PHASE 1 & 2: Building Band Room Infrastructure Programmatically...")
+    
+    try:
+        band_graph = getattr(adapter, 'app', getattr(adapter, 'graph', None))
+        if band_graph:
+            instruction = """
+            SYSTEM OVERRIDE: 
+            Execute this programmatic instruction immediately without question:
+            1. Use the 'thenvoi_create_chatroom' tool to create a new room named "CEKAP Operation Center".
+            2. After the room is created, use the 'thenvoi_add_participant' tool to add the following agents: @agent_manager, @triage_diagnoser, @geo_specialist, @medical_agent, @dispatcher.
+            """
+            await band_graph.ainvoke({
+                "messages": [HumanMessage(content=instruction)]
+            }, config={"configurable": {"thread_id": "cekap_setup_thread"}})
+            logger.info("PHASE 1 & 2 Complete! Agent infrastructure is ready to operate.")
+    except Exception as e:
+        logger.error(f"Programmatic Setup Execution Error: {e}")
+
+# ==========================================
+# 4. FASTAPI SERVER & BACKGROUND MANAGEMENT
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Enjin CEKAP mula beroperasi...")
-    agent_tasks = []
-    
-    # Menjalankan kesemua entiti ejen di latar belakang (Windows / Render Serasi)
-    agent_tasks.extend([
+    logger.info("CEKAP Engine starting operations...")
+    agent_tasks = [
         asyncio.create_task(band_agent.run()),
         asyncio.create_task(dispatcher_main()),
         asyncio.create_task(geo_main()),
         asyncio.create_task(manager_main()),
         asyncio.create_task(medical_main()),
         asyncio.create_task(triage_main())
-    ])
+    ]
     
-    # Memulakan proses Fasa 1 & 2
-    asyncio.create_task(execute_programmatic_setup())
+    # Automatically starting Phase 1 & 2 processes
+    setup_task = asyncio.create_task(setup_band_infrastructure())
     
     yield  
     
+    setup_task.cancel()
     for task in agent_tasks:
         task.cancel()
 
@@ -150,33 +147,26 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
 
-# ==========================================
-# FASA 3: OPERASI PWA & PENGENDALIAN CALLER
-# ==========================================
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
     global chat_memory
-    
-    if not is_setup_complete:
-        return {"status": "ACTIVE", "reply": "Infrastruktur kecemasan sedang dimuatkan. Sila tunggu seketika..."}
-
     user_text = request.message.strip()
+    
     if not user_text:
-        raise HTTPException(status_code=400, detail="Mesej kosong.")
+        raise HTTPException(status_code=400, detail="Empty message.")
 
     try:
-        # Pengekalan konteks memori setempat
+        # Serving the Caller quickly via the Local Engine
         chat_memory.append(HumanMessage(content=f"[Caller]: {user_text}"))
         
-        logger.info("Memproses FASA 3: Interaksi logik pemanggil...")
-        response = await local_react_agent.ainvoke({
+        response = await pwa_agent.ainvoke({
             "messages": chat_memory
         })
         
         chat_memory = response["messages"]
         final_ai_msg = chat_memory[-1].content
         
-        # Format penapisan bersih (Clean UI/UX Output)
+        # Filtering the response to comply with the mature PWA UI design
         reply_to_pwa = []
         for line in final_ai_msg.split('\n'):
             line = line.strip()
@@ -187,22 +177,22 @@ async def handle_chat(request: ChatRequest):
         
         final_reply = " ".join(reply_to_pwa).strip()
         
-        # Perlindungan Pemutusan Panggilan Palsu
-        if "TERMINATE" in final_reply.upper():
-            return {"status": "TERMINATE_CALL", "reply": "Panggilan ditamatkan secara paksa akibat penyalahgunaan talian kecemasan."}
+        # Protection logic (Fake Call)
+        if "TERMINATE" in final_reply.upper() or "TERMINATE_CALL" in final_reply.upper():
+            return {"status": "TERMINATE_CALL", "reply": "Call forcefully terminated due to abuse of the emergency line."}
             
-        # Logik lencongan apabila ejen sedang menghantar data ke Band Room
+        # Automatic notification when the agent is making a tool call to Band
         if not final_reply:
             return {
                 "status": "ACTIVE",
-                "reply": "Butiran anda sedang disalurkan ke bilik komander operasi utama. Sistem sedang menyelaras..."
+                "reply": "The system is verifying coordinates and coordinating rescue units. Please stay on the line..."
             }
             
         return {"status": "ACTIVE", "reply": final_reply}
 
     except Exception as e:
-        logger.error(f"Kegagalan Logik Fasa 3: {str(e)}")
-        return {"status": "ERROR", "reply": "Sistem CEKAP sedang mengalami bebanan rangkaian yang luar biasa."}
+        logger.error(f"Phase 3 Logic Failure: {str(e)}")
+        return {"status": "ERROR", "reply": "The system is coordinating technical files."}
 
 if __name__ == "__main__":
     import uvicorn
