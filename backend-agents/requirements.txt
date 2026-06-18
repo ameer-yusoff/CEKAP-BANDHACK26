@@ -7,4 +7,5 @@ python-dotenv
 requests
 pydantic
 langgraph
+numpy>=1.26.4
 band
