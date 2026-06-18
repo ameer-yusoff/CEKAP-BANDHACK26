@@ -42,6 +42,7 @@ AGENTS = {
 BAND_URL = os.getenv("THENVOI_REST_URL", "https://app.thenvoi.com").rstrip("/")
 CEKAP_ROOM_ID = None
 first_responder_client = None
+processed_msg_ids = set()
 
 # ==========================================
 # 2. PHASE 1 & 2: PROGRAMMATIC SETUP (DETERMINISTIC)
@@ -127,51 +128,58 @@ class ChatRequest(BaseModel):
 # ==========================================
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
+    global processed_msg_ids
     if not CEKAP_ROOM_ID or not first_responder_client:
-        return {"status": "ACTIVE", "reply": "System is loading, please wait..."}
+        return {"status": "ACTIVE", "reply": "Sistem sedang dimuatkan, sila tunggu..."}
 
     user_text = request.message.strip()
     
     try:
-        # Send caller input to the Band Network using a valid REST API (No 401)
-        # We tag @agent_manager so the network starts analyzing
+        # 1. Hantar mesej pemanggil ke bilik menggunakan identiti Dispatcher (sebagai proxy sistem PWA)
+        # Ini memastikan ejen First Responder (LLM) membacanya sebagai mesej luar
+        disp_id, disp_key = AGENTS["dispatcher"]
+        disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
+        
         fr_id, _ = AGENTS["first_responder"]
-        mgr_id, _ = AGENTS["agent_manager"]
+        items = [ChatMessageRequestMentionsItem(id=fr_id, name="first_responder")]
         
-        items = [
-            ChatMessageRequestMentionsItem(id=mgr_id, name="agent_manager")
-        ]
-        
-        await first_responder_client.agent_api_messages.create_agent_chat_message(
+        await disp_client.agent_api_messages.create_agent_chat_message(
             CEKAP_ROOM_ID, 
             message=ChatMessageRequest(
-                content=f"@agent_manager [Caller via First Responder]: {user_text}", 
+                content=f"@first_responder [CALLER]: {user_text}", 
                 mentions=items
             )
         )
         
-        # Polling for answers: Peeking into the Band message inbox for First Responder
+        # 2. Polling jawapan: Mengintai inbox mesej Band untuk Dispatcher (sebab First Responder diarah tag dispatcher untuk membalas caller)
         for _ in range(15):
             await asyncio.sleep(2)
             try:
-                resp = await first_responder_client.agent_api_messages.get_agent_next_message(CEKAP_ROOM_ID)
-                content = getattr(getattr(resp, "data", None), "content", None)
-                
-                if content and any(tag in content for tag in ["@Caller", "@First_Responder", "@first_responder"]):
-                    clean_reply = content.replace("@Caller", "").replace("@First_Responder", "").replace("@first_responder", "").replace("Please relay these steps to the caller:", "").replace("_", "").replace("*", "").strip()
+                resp = await disp_client.agent_api_messages.get_agent_next_message(CEKAP_ROOM_ID)
+                msg_data = getattr(resp, "data", None)
+                if msg_data:
+                    content = getattr(msg_data, "content", "")
+                    msg_id = getattr(msg_data, "id", None)
                     
-                    if "TERMINATE" in clean_reply.upper():
-                        return {"status": "TERMINATE_CALL", "reply": "Panggilan ditamatkan secara paksa."}
+                    # Tapis dengan ketat supaya HANYA mesej rasmi First Responder kepada pemanggil dipaparkan
+                    if content and msg_id not in processed_msg_ids and "@Caller" in content:
+                        processed_msg_ids.add(msg_id)
                         
-                    return {"status": "ACTIVE", "reply": clean_reply}
+                        # Bersihkan tag teknikal sebelum hantar ke fungsi TTS pengguna
+                        clean_reply = content.replace("@Caller", "").replace("@dispatcher", "").replace("@Dispatcher", "").replace("_", "").replace("*", "").strip()
+                        
+                        if "TERMINATE" in clean_reply.upper():
+                            return {"status": "TERMINATE_CALL", "reply": "Panggilan ditamatkan secara paksa."}
+                            
+                        return {"status": "ACTIVE", "reply": clean_reply}
             except Exception:
-                pass # Continue polling if there are no new messages
+                pass # Teruskan polling jika tiada mesej baharu
 
-        return {"status": "ACTIVE", "reply": "Information received. Action units are coordinating..."}
+        return {"status": "ACTIVE", "reply": "Sistem sedang memproses maklumat dan menyelaras unit. Sila tunggu..."}
 
     except Exception as e:
         logger.error(f"Phase 3 Error: {str(e)}")
-        return {"status": "ERROR", "reply": "System is experiencing network congestion."}
+        return {"status": "ERROR", "reply": "Sistem mengalami kesesakan rangkaian."}
 
 if __name__ == "__main__":
     import uvicorn
