@@ -24,7 +24,7 @@ from manager_agent import main as manager_main
 from medical_agent import main as medical_main
 from triage_agent import main as triage_main
 
-# Configure Logging
+# Mature & Professional Log Configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ load_dotenv()
 agent_id, api_key = load_agent_config("first_responder")
 
 llm = ChatOpenAI(
-    model="deepseek/deepseek-chat", # AI/ML API
+    model="deepseek/deepseek-chat", # Powered by AI/ML API
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     temperature=0.0 
@@ -52,19 +52,23 @@ band_agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
 
 # Global variables
 last_message_timestamp = time.time()
-DYNAMIC_CHAT_ID = None
+# Pull Static Chat Room ID from Environment (Render)
+BAND_CHAT_ID = os.getenv("BAND_CHAT_ID")
 
 # ==========================================
 # 2. FASTAPI SERVER SETUP
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("FastAPI is starting...")
+    if not BAND_CHAT_ID:
+        logger.error("CRITICAL WARNING: BAND_CHAT_ID not found in environment (Environment Variables)!")
+
+    logger.info("CEKAP Engine is starting...")
     agent_tasks = []
     
     async def start_background_agents():
         await asyncio.sleep(5) 
-        logger.info("Starting all CEKAP agents in the background...")
+        logger.info("Activating agent infrastructure in parallel (Parallel Processing)...")
         agent_tasks.extend([
             asyncio.create_task(band_agent.run()),
             asyncio.create_task(dispatcher_main()),
@@ -93,32 +97,16 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
 
-async def get_active_chat_id(client, headers):
-    """Find active chat room dynamically without static ID."""
-    global DYNAMIC_CHAT_ID
-    if DYNAMIC_CHAT_ID:
-        return DYNAMIC_CHAT_ID
-        
-    try:
-        res = await client.get("https://app.thenvoi.com/api/v1/agent/chats", headers=headers)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                DYNAMIC_CHAT_ID = data[0].get("id")
-            elif isinstance(data, dict) and "data" in data and len(data["data"]) > 0:
-                DYNAMIC_CHAT_ID = data["data"][0].get("id")
-        return DYNAMIC_CHAT_ID
-    except Exception as e:
-        logger.error(f"Failed to retrieve room list: {str(e)}")
-        return None
-
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
     global last_message_timestamp
     user_text = request.message.strip()
     
     if not user_text:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+        raise HTTPException(status_code=400, detail="Error message: Empty input.")
+
+    if not BAND_CHAT_ID:
+        return {"status": "ERROR", "reply": "System is being upgraded. BAND_CHAT_ID configuration not yet set."}
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -127,30 +115,27 @@ async def handle_chat(request: ChatRequest):
 
     try:
         async with httpx.AsyncClient() as client:
-            chat_id = await get_active_chat_id(client, headers)
-            if not chat_id:
-                return {"status": "ERROR", "reply": "System cannot find active room. Please create room on Band platform."}
-
-            # 1. Send message to Band
+            # 1. Send message directly to specific verified Band room
             payload = {
                 "text": f"@first_responder [Caller]: {user_text}"
             }
             send_res = await client.post(
-                f"https://app.thenvoi.com/api/v1/agent/chats/{chat_id}/messages", 
+                f"https://app.thenvoi.com/api/v1/agent/chats/{BAND_CHAT_ID}/messages", 
                 headers=headers, 
                 json=payload
             )
             
             if send_res.status_code not in [200, 201]:
-                return {"status": "ERROR", "reply": "Failed to connect to main server."}
+                logger.error(f"Band API Rejected. Code: {send_res.status_code}")
+                return {"status": "ERROR", "reply": "Failed to connect to emergency server infrastructure."}
 
-            # 2. Polling: Wait for response from First Responder
-            logger.info(f"Waiting for response in room: {chat_id}...")
+            # 2. Polling Mechanism: Wait for confirmation from First Responder agent in that room
+            logger.info(f"Monitoring operation room for coordination: {BAND_CHAT_ID}...")
             
-            for _ in range(15): # Polling ~30 seconds
+            for _ in range(15): # Active monitoring ~30 seconds
                 await asyncio.sleep(2)
                 chat_res = await client.get(
-                    f"https://app.thenvoi.com/api/v1/agent/chats/{chat_id}/messages", 
+                    f"https://app.thenvoi.com/api/v1/agent/chats/{BAND_CHAT_ID}/messages", 
                     headers=headers
                 )
                 
@@ -160,22 +145,25 @@ async def handle_chat(request: ChatRequest):
                         latest_msg = messages[0] 
                         msg_text = latest_msg.get("text", "")
                         
+                        # Filter responses specifically addressed to caller
                         if "@Caller" in msg_text and latest_msg.get("created_at_timestamp", 0) > last_message_timestamp:
                             last_message_timestamp = time.time()
                             
+                            # Execute clean filtering logic before Text-to-Speech
                             clean_reply = re.sub(r'^@Caller[:,\s]*', '', msg_text, flags=re.IGNORECASE).strip()
                             clean_reply = re.sub(r'[*#_]', '', clean_reply)
                             
+                            # Detection of fake call intervention directed by Manager
                             if "TERMINATE" in clean_reply.upper():
-                                return {"status": "TERMINATE_CALL", "reply": "Call terminated."}
+                                return {"status": "TERMINATE_CALL", "reply": "Line terminated. Fake call usage detected."}
                                 
                             return {"status": "ACTIVE", "reply": clean_reply}
 
             return {
                 "status": "ACTIVE",
-                "reply": "System is coordinating your information with rescue team. Please wait..."
+                "reply": "Logic coordination is running in the background with support agents. Please wait..."
             }
 
     except Exception as e:
-        logger.error(f"API Error: {str(e)}")
-        return {"status": "ERROR", "reply": "Network disruption detected."}
+        logger.error(f"Encoding Error: {str(e)}")
+        return {"status": "ERROR", "reply": "CEKAP system is experiencing unforeseen disruption."}
