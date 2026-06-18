@@ -118,7 +118,6 @@ async def handle_chat(request: ChatRequest):
         mgr_id, _ = AGENTS["agent_manager"]
         
         items = [
-            ChatMessageRequestMentionsItem(id=fr_id, name="first_responder"),
             ChatMessageRequestMentionsItem(id=mgr_id, name="agent_manager")
         ]
         
