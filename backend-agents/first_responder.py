@@ -123,6 +123,18 @@ async def handle_chat(request: ChatRequest):
     global CEKAP_ROOM_ID, pwa_chat_memory, medical_alert_given
     user_text = request.message.strip()
 
+    if CEKAP_ROOM_ID:
+        try:
+            supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+            res = supabase.table("emergency_logs").select("status").eq("raw_location", CEKAP_ROOM_ID).execute()
+            if res.data and res.data[0]["status"] == "RETIRED_ROOM":
+                logger.info("Bilik operasi terdahulu telah ditamatkan. Memulakan sesi kecemasan baharu.")
+                CEKAP_ROOM_ID = None
+                pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
+                medical_alert_given = False
+        except Exception:
+            pass
+
     pwa_chat_memory.append(HumanMessage(content=user_text))
     
     try:
@@ -131,6 +143,15 @@ async def handle_chat(request: ChatRequest):
         
         if "<TRANSFER_TO_MANAGER:" in ai_reply:
             extracted_info = ai_reply.split("<TRANSFER_TO_MANAGER:")[-1].split(">")[0].strip()
+            
+            clean_ui_reply = ai_reply.split("<TRANSFER_TO_MANAGER:")[0].strip()
+            
+            if not clean_ui_reply:
+                fallback_prompt = "Say 'Thank you, please wait while help is dispatched.' naturally in the exact language the caller used."
+                fallback = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=fallback_prompt)]).content
+                clean_ui_reply = fallback.replace('"', '').strip()
+                
+            pwa_chat_memory.append(AIMessage(content=clean_ui_reply))
             medical_alert_given = False 
             
             if not CEKAP_ROOM_ID:
@@ -148,11 +169,7 @@ async def handle_chat(request: ChatRequest):
                 )
             )
             
-        if CEKAP_ROOM_ID:
-            fr_id, fr_key = AGENTS["first_responder"]
-            rest_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
-            
-            for _ in range(5): 
+            for _ in range(8):
                 await asyncio.sleep(1.5)
                 try:
                     resp = await rest_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
@@ -166,42 +183,38 @@ async def handle_chat(request: ChatRequest):
                             medical_alert_given = True
                             
                             trans_prompt = f"Translate and format these first-aid steps naturally into the exact language the caller is using: {medical_steps}"
-                            translated_med = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=trans_prompt)]).content.replace('"', '').strip()
+                            translated_med = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=trans_prompt)]).content.strip()
                             
-                            clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
-                            final_reply = f"{clean_ui_reply}\n\n{translated_med}" if clean_ui_reply else translated_med
+                            final_reply = f"{clean_ui_reply}\n\n{translated_med}"
                             pwa_chat_memory.append(AIMessage(content=translated_med))
                             return {"status": "ACTIVE", "reply": final_reply}
                             
                         if "MISSION_SUCCESS" in content:
                             CEKAP_ROOM_ID = None 
                             term_prompt = "Say EXACTLY 'Rescue units have been successfully dispatched. Terminating call.' but naturally in the caller's language."
-                            translated_term = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=term_prompt)]).content.replace('"', '').strip()
+                            translated_term = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=term_prompt)]).content.strip()
                             
-                            clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
-                            final_reply = f"{clean_ui_reply}\n\n{translated_term}" if clean_ui_reply else translated_term
-                            pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)] # Clear Memory 
+                            final_reply = f"{clean_ui_reply}\n\n{translated_term}"
+                            pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)] 
                             return {"status": "TERMINATE_CALL", "reply": final_reply}
+                            
                 except Exception:
                     pass
 
-        clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
-        
-        if not clean_ui_reply:
-            fallback_prompt = "Say 'Thank you, please wait while help is dispatched.' naturally in the exact language the caller used."
-            fallback = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=fallback_prompt)]).content
-            clean_ui_reply = fallback.replace('"', '').strip()
+            return {"status": "ACTIVE", "reply": clean_ui_reply}
 
+        clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
         pwa_chat_memory.append(AIMessage(content=clean_ui_reply))
         return {"status": "ACTIVE", "reply": clean_ui_reply}
 
     except Exception as e:
         logger.error(f"PWA Processing Error: {str(e)}")
+        
         try:
             err_prompt = "Say 'The system is processing. Please stay calm.' naturally in the exact language the caller used."
             err_reply = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=err_prompt)]).content.replace('"', '').strip()
         except Exception:
-            err_reply = "The system is processing. Please stay calm."
+            err_reply = "Sistem sedang memproses. Harap bertenang."
             
         return {"status": "ERROR", "reply": err_reply}
 
