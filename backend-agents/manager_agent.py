@@ -31,7 +31,7 @@ load_dotenv()
 
 # 1. LLM INITIALIZATION
 llm = ChatOpenAI(
-    model="o3-mini",
+    model="deepseek/deepseek-chat",
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     temperature=0.0
