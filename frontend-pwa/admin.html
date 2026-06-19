@@ -108,7 +108,10 @@
                 const response = await fetch('/api/config');
                 if (response.ok) {
                     const config = await response.json();
-                    supabase = supabaseClient.createClient(config.supabaseUrl, config.supabaseKey);
+                    const SUPABASE_URL = "V_SUPABASE_URL";
+                    const SUPABASE_KEY = "V_SUPABASE_KEY";
+
+                    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
                 } else {
                     // Fallback: try to read from browser environment or localStorage
                     const supabaseUrl = localStorage.getItem('SUPABASE_URL') || import.meta.env?.VITE_SUPABASE_URL;
@@ -126,11 +129,11 @@
         }
 
         async function fetchLogs() {
-            if (!supabase) return;
-            
+            // Mengambil data dari Supabase, dan menapis keluar log "Sistem/Bilik"
             const { data, error } = await supabase
                 .from('emergency_logs')
                 .select('*')
+                .neq('status', 'ACTIVE_ROOM') // Menapis log pembuatan bilik sistem
                 .order('created_at', { ascending: false });
 
             if (error) {
@@ -138,21 +141,24 @@
                 return;
             }
 
-            const tbody = document.getElementById('tableBody');
-            tbody.innerHTML = '';
+            const tableBody = document.getElementById('logsTableBody'); // Pastikan ID ini sama dengan ID <tbody> anda
+            tableBody.innerHTML = '';
 
             data.forEach(log => {
                 const tr = document.createElement('tr');
-                const mapLink = log.maps_link ? `<a href="${log.maps_link}" class="map-link" target="_blank">${log.raw_location}</a>` : log.raw_location;
                 
+                // Padanan nama mesti TEPAT dengan SQL (cth: log.raw_location, log.emergency_type)
                 tr.innerHTML = `
-                    <td style="color: var(--text-secondary)">#${log.id}</td>
-                    <td>${log.emergency_type}</td>
-                    <td class="priority-${log.priority_level}">${log.priority_level}</td>
-                    <td>${mapLink}</td>
-                    <td>${log.status}</td>
+                    <td>${log.id || '-'}</td>
+                    <td>${new Date(log.created_at).toLocaleString()}</td>
+                    <td>${log.emergency_type || '-'}</td>
+                    <td><span class="badge priority-${(log.priority_level || '').toLowerCase()}">${log.priority_level || '-'}</span></td>
+                    <td>${log.injuries || 'None'}</td>
+                    <td>${log.raw_location || '-'}</td>
+                    <td><span class="badge status-${(log.status || '').toLowerCase()}">${log.status || '-'}</span></td>
+                    <td>${log.maps_link ? `<a href="${log.maps_link}" target="_blank" style="color: #00ff88;">View Map</a>` : 'N/A'}</td>
                 `;
-                tbody.appendChild(tr);
+                tableBody.appendChild(tr);
             });
         }
 
