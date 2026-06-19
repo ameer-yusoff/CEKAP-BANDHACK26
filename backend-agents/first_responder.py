@@ -218,6 +218,23 @@ async def handle_chat(request: ChatRequest):
             
         return {"status": "ERROR", "reply": err_reply}
 
+@app.get("/api/logs")
+async def get_emergency_logs():
+    try:
+        supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+        
+        res = supabase.table("emergency_logs") \
+                      .select("*") \
+                      .neq("status", "ACTIVE_ROOM") \
+                      .neq("status", "RETIRED_ROOM") \
+                      .order("created_at", desc=True) \
+                      .execute()
+                      
+        return {"status": "success", "data": res.data}
+    except Exception as e:
+        logger.error(f"Fetch Logs Error from Admin Dashboard: {str(e)}")
+        return {"status": "error", "message": "Gagal mengakses pangkalan data."}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)

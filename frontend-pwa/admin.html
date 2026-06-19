@@ -254,32 +254,27 @@
         }
 
         async function fetchLogs() {
-            if (!supabaseClientInstance) {
-                if (!initSupabase()) return;
-            }
-
             try {
-                const { data, error } = await supabaseClientInstance
-                    .from('emergency_logs')
-                    .select('*')
-                    .neq('status', 'ACTIVE_ROOM') 
-                    .neq('status', 'RETIRED_ROOM')
-                    .order('created_at', { ascending: false });
+                const response = await fetch('https://cekap-backend.onrender.com/api/logs');
+                const result = await response.json();
 
-                if (error) {
-                    console.error('Error fetching data from Supabase:', error);
+                if (result.status !== 'success') {
+                    console.error('API Error:', result.message);
+                    document.getElementById('connection-status').innerText = "Connection Failed";
                     return;
                 }
 
+                document.getElementById('connection-status').innerText = "Live Sync Active";
+                const data = result.data;
                 const tableBody = document.getElementById('logsTableBody');
-                
+        
                 if (!data || data.length === 0) {
                     tableBody.innerHTML = `<tr><td colspan="8" class="empty-state">No active emergency logs currently.</td></tr>`;
                     return;
                 }
 
                 tableBody.innerHTML = ''; 
-
+        
                 data.forEach(log => {
                     const tr = document.createElement('tr');
                     
