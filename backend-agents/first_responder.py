@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+import re
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # ==========================================
-# 1. CREDENTIAL MANAGEMENT
+# 1. CREDENTIAL MANAGEMENT & GLOBALS
 # ==========================================
 AGENTS = {
     "first_responder": load_agent_config("first_responder"),
@@ -47,7 +48,7 @@ CEKAP_ROOM_ID = None
 processed_msg_ids = set()
 
 # ==========================================
-# 2. DYNAMIC INFRASTRUCTURE (ROOM CREATION)
+# 2. PHASE 1 & 2: DYNAMIC INFRASTRUCTURE
 # ==========================================
 async def build_cekap_infrastructure():
     global CEKAP_ROOM_ID
@@ -166,8 +167,16 @@ async def handle_chat(request: ChatRequest):
         disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
         fr_id, _ = AGENTS["first_responder"]
         
-        # THE POISON PILL FIX: Exact @first_responder string included in payload
-        await disp_client.agent_api_messages.create_agent_chat_message(
+        # --- BUG FIX: PRELOAD OLD MESSAGES TO AVOID GHOSTING ---
+        try:
+            old_msgs = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
+            for m in getattr(old_msgs, "data", []):
+                processed_msg_ids.add(getattr(m, "id"))
+        except Exception as e:
+            logger.warning(f"Failed to preload messages: {e}")
+
+        # Inject Caller's Message
+        send_resp = await disp_client.agent_api_messages.create_agent_chat_message(
             CEKAP_ROOM_ID, 
             message=ChatMessageRequest(
                 content=f"@first_responder [CALLER_INPUT]: {user_text}", 
@@ -175,15 +184,20 @@ async def handle_chat(request: ChatRequest):
             )
         )
         
+        # Avoid parsing our own proxy message
+        my_msg_id = getattr(getattr(send_resp, "data", None), "id", None)
+        if my_msg_id:
+            processed_msg_ids.add(my_msg_id)
+        
         # Poll for 30 seconds
         for _ in range(15):
             await asyncio.sleep(2)
             try:
-                # Use get_agent_chat_messages (READ-ONLY) to avoid 422 Validation Error
+                # READ-ONLY polling
                 resp = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
                 messages = getattr(resp, "data", [])
                 
-                # Check chronologically (oldest to newest) to process properly
+                # Check chronologically (oldest to newest)
                 for msg in reversed(messages):
                     content = getattr(msg, "content", "")
                     msg_id = getattr(msg, "id", None)
