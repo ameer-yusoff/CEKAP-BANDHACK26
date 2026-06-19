@@ -69,6 +69,19 @@ def send_telegram_dispatch(record_id: str, emergency_details: str, latitude: str
         logger.error(f"Webhook/Supabase Error: {str(e)}")
         return f"FAILED: {str(e)}"
 
+@tool
+def terminate_emergency_session() -> str:
+    """
+    CRITICAL TOOL: Execute this ONLY after successfully sending the Telegram dispatch.
+    This securely retires the room in the database.
+    """
+    logger.info("EXECUTING TERMINATION PROTOCOL...")
+    try:
+        supabase_client.table("emergency_logs").update({"status": "RETIRED_ROOM"}).eq("status", "ACTIVE_ROOM").execute()
+        return "SUCCESS: Operations room retired successfully."
+    except Exception as e:
+        return f"FAILED: {str(e)}"
+
 async def main():
     agent_id, api_key = load_agent_config("dispatcher") 
     
@@ -82,7 +95,7 @@ async def main():
     adapter = LangGraphAdapter(
         llm=llm,
         checkpointer=InMemorySaver(),
-        additional_tools=[send_telegram_dispatch],
+        additional_tools=[send_telegram_dispatch, terminate_emergency_session],
         custom_section=DISPATCHER_PROMPT
     )
     

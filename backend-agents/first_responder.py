@@ -150,7 +150,12 @@ class ChatRequest(BaseModel):
 # ==========================================
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
-    global processed_msg_ids
+    global processed_msg_ids, CEKAP_ROOM_ID
+    
+    # AUTOMATED RESET: Build new room if previous was retired/completed
+    if not CEKAP_ROOM_ID:
+        await build_cekap_infrastructure()
+        
     if not CEKAP_ROOM_ID:
         return {"status": "ACTIVE", "reply": "System is booting up, please wait..."}
 
@@ -174,17 +179,21 @@ async def handle_chat(request: ChatRequest):
         for _ in range(15):
             await asyncio.sleep(2)
             try:
-                resp = await disp_client.agent_api_messages.get_agent_next_message(CEKAP_ROOM_ID)
-                msg_data = getattr(resp, "data", None)
-                if msg_data:
-                    content = getattr(msg_data, "content", "")
-                    msg_id = getattr(msg_data, "id", None)
+                # Use get_agent_chat_messages (READ-ONLY) to avoid 422 Conflict Error
+                resp = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
+                messages = getattr(resp, "data", [])
+                
+                if messages:
+                    latest_msg = messages[0] # The most recent message
+                    content = getattr(latest_msg, "content", "")
+                    msg_id = getattr(latest_msg, "id", None)
                     
                     if content and msg_id not in processed_msg_ids:
                         processed_msg_ids.add(msg_id)
                         
-                        # Trigger system termination upon successful dispatch
+                        # Trigger system reset upon successful dispatch
                         if "MISSION_SUCCESS" in content:
+                            CEKAP_ROOM_ID = None # Force the next caller to generate a new room
                             return {"status": "TERMINATE_CALL", "reply": "Rescue units have been successfully dispatched. Terminating call safely."}
                         
                         # Cleanly extract messages meant for the Caller
@@ -192,7 +201,7 @@ async def handle_chat(request: ChatRequest):
                             clean_reply = content.split("CALLER:")[-1].strip()
                             return {"status": "ACTIVE", "reply": clean_reply}
             except Exception:
-                pass 
+                pass
 
         return {"status": "ACTIVE", "reply": "System is coordinating units in the background. Please hold..."}
 
