@@ -1,11 +1,11 @@
 import asyncio
 import logging
 import os
-import time
 import re
+import uuid
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -15,9 +15,7 @@ from band.client.rest import AsyncRestClient, ChatRoomRequest, ParticipantReques
 from thenvoi.config import load_agent_config
 
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
-from thenvoi import Agent
-from thenvoi.adapters import LangGraphAdapter
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from prompts import FIRST_RESPONDER_PROMPT
 
 from dispatcher_agent import main as dispatcher_main
@@ -26,12 +24,15 @@ from manager_agent import main as manager_main
 from medical_agent import main as medical_main
 from triage_agent import main as triage_main
 
+# Log Configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
+# ==========================================
+# 1. CREDENTIALS & GLOBALS
+# ==========================================
 AGENTS = {
-    "first_responder": load_agent_config("first_responder"),
     "agent_manager": load_agent_config("agent_manager"),
     "triage_diagnoser": load_agent_config("triage_diagnoser"),
     "geo_specialist": load_agent_config("geo_specialist"),
@@ -41,86 +42,66 @@ AGENTS = {
 
 BAND_URL = os.getenv("THENVOI_REST_URL", "https://app.thenvoi.com").rstrip("/")
 CEKAP_ROOM_ID = None
-processed_msg_ids = set()
 
+# LOCAL MEMORY FOR FIRST RESPONDER (Lightning Fast PWA)
+pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
+local_llm = ChatOpenAI(
+    model="deepseek/deepseek-chat",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL"),
+    temperature=0.0
+)
+
+# ==========================================
+# 2. DYNAMIC INFRASTRUCTURE (ROOM CREATION)
+# ==========================================
 async def build_cekap_infrastructure():
     global CEKAP_ROOM_ID
     logger.info("Starting DYNAMIC CEKAP infrastructure build...")
     
     try:
-        fr_id, fr_key = AGENTS["first_responder"]
-        first_responder_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
+        mgr_id, mgr_key = AGENTS["agent_manager"]
+        rest_client = AsyncRestClient(api_key=mgr_key, base_url=BAND_URL)
         supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
         
-        needs_new_room = True
+        # Always create a fresh room for a new mission
+        logger.info("Creating a fresh Operations Room...")
+        resp = await rest_client.agent_api_chats.create_agent_chat(chat=ChatRoomRequest())
+        CEKAP_ROOM_ID = resp.data.id
         
         try:
-            res = supabase.table("emergency_logs").select("id, raw_location").eq("status", "ACTIVE_ROOM").execute()
-            if res.data and len(res.data) > 0:
-                potential_room_id = res.data[0]["raw_location"]
-                record_id = res.data[0]["id"]
-                
-                try:
-                    msg_res = await first_responder_client.agent_api_messages.get_agent_chat_messages(chat_id=potential_room_id, page=1)
-                    total_messages = getattr(getattr(msg_res, "meta", None), "total", 0)
-                    
-                    if total_messages < 900:
-                        CEKAP_ROOM_ID = potential_room_id
-                        needs_new_room = False
-                        logger.info(f"Reusing healthy room: {CEKAP_ROOM_ID}")
-                    else:
-                        supabase.table("emergency_logs").update({"status": "RETIRED_ROOM"}).eq("id", record_id).execute()
-                except Exception:
-                    supabase.table("emergency_logs").update({"status": "RETIRED_ROOM"}).eq("id", record_id).execute()
+            supabase.table("emergency_logs").insert({
+                "emergency_type": "SYSTEM", "priority_level": "N/A", 
+                "injuries": "N/A", "raw_location": CEKAP_ROOM_ID, "status": "ACTIVE_ROOM" 
+            }).execute()
         except Exception:
             pass
-
-        if needs_new_room:
-            logger.info("Creating a fresh Operations Room...")
-            resp = await first_responder_client.agent_api_chats.create_agent_chat(chat=ChatRoomRequest())
-            CEKAP_ROOM_ID = resp.data.id
-            
-            try:
-                supabase.table("emergency_logs").insert({
-                    "emergency_type": "SYSTEM", "priority_level": "N/A", 
-                    "injuries": "N/A", "raw_location": CEKAP_ROOM_ID, "status": "ACTIVE_ROOM" 
-                }).execute()
-            except Exception:
-                pass
-            
-            for name, (agent_id, api_key) in AGENTS.items():
-                if name == "first_responder": continue 
-                await first_responder_client.agent_api_participants.add_agent_chat_participant(
-                    CEKAP_ROOM_ID, participant=ParticipantRequest(participant_id=agent_id, role="member")
-                )
-            logger.info("All agents added to new operations room.")
+        
+        # Add all support agents (except First Responder, because FR is now LOCAL)
+        for name, (agent_id, api_key) in AGENTS.items():
+            if name == "agent_manager": continue 
+            await rest_client.agent_api_participants.add_agent_chat_participant(
+                CEKAP_ROOM_ID, participant=ParticipantRequest(participant_id=agent_id, role="member")
+            )
+        logger.info("All support agents added to the new operations room.")
 
     except Exception as e:
         logger.error(f"Infrastructure build failed: {str(e)}")
 
-async def first_responder_main():
-    agent_id, api_key = AGENTS["first_responder"]
-    llm = ChatOpenAI(
-        model="deepseek/deepseek-chat",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
-        temperature=0.0
-    )
-    adapter = LangGraphAdapter(llm=llm, checkpointer=InMemorySaver(), custom_section=FIRST_RESPONDER_PROMPT)
-    agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
-    await agent.run()
-
+# ==========================================
+# 3. SERVER & STAGGERED BOOT
+# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await build_cekap_infrastructure()
     agent_tasks = []
     
     async def start_agents_staggered():
-        logger.info("Booting agents sequentially to prevent WebSocket Timeout...")
-        for agent_func in [first_responder_main, manager_main, dispatcher_main, geo_main, medical_main, triage_main]:
+        logger.info("Booting support agents sequentially...")
+        for agent_func in [manager_main, dispatcher_main, geo_main, medical_main, triage_main]:
             agent_tasks.append(asyncio.create_task(agent_func()))
             await asyncio.sleep(2)
-        logger.info("ALL AGENTS SYSTEM ONLINE!")
+        logger.info("ALL SUPPORT AGENTS ONLINE!")
 
     boot_task = asyncio.create_task(start_agents_staggered())
     yield  
@@ -133,83 +114,72 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 class ChatRequest(BaseModel):
     message: str
 
+# ==========================================
+# 4. PHASE 3: PWA DIRECT CHAT & RELAY
+# ==========================================
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
-    global processed_msg_ids, CEKAP_ROOM_ID
-    
-    supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-    
-    # SYSTEM RESET CHECK: If DB says room is retired, reset global ID
-    if CEKAP_ROOM_ID:
-        res = supabase.table("emergency_logs").select("status").eq("raw_location", CEKAP_ROOM_ID).execute()
-        if res.data and len(res.data) > 0 and res.data[0]["status"] != "ACTIVE_ROOM":
-            CEKAP_ROOM_ID = None
-
-    if not CEKAP_ROOM_ID:
-        await build_cekap_infrastructure()
-        if not CEKAP_ROOM_ID:
-            return {"status": "ACTIVE", "reply": "System is booting up, please wait..."}
-
+    global CEKAP_ROOM_ID, pwa_chat_memory
     user_text = request.message.strip()
+
+    # Step 1: Direct Local Chat with Caller (Lightning Fast)
+    pwa_chat_memory.append(HumanMessage(content=user_text))
     
     try:
-        disp_id, disp_key = AGENTS["dispatcher"]
-        disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
-        fr_id, _ = AGENTS["first_responder"]
+        response = local_llm.invoke(pwa_chat_memory)
+        ai_reply = response.content.strip()
+        pwa_chat_memory.append(AIMessage(content=ai_reply))
         
-        try:
-            old_msgs = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
-            for m in getattr(old_msgs, "data", []):
-                processed_msg_ids.add(getattr(m, "id"))
-        except Exception:
-            pass
-
-        # Force context directly to First Responder to demand an answer
-        logger.info(f"Injecting message to First Responder: {user_text}")
-        send_resp = await disp_client.agent_api_messages.create_agent_chat_message(
-            CEKAP_ROOM_ID, 
-            message=ChatMessageRequest(
-                content=f"@first_responder You MUST reply to the caller: [CALLER_INPUT] {user_text}", 
-                mentions=[ChatMessageRequestMentionsItem(id=fr_id, name="first_responder")]
-            )
-        )
-        
-        my_msg_id = getattr(getattr(send_resp, "data", None), "id", None)
-        if my_msg_id:
-            processed_msg_ids.add(my_msg_id)
-        
-        for _ in range(15): # 30 seconds polling
-            await asyncio.sleep(2)
-            try:
-                resp = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
-                messages = getattr(resp, "data", [])
+        # Step 2: Did the AI gather enough info to transfer?
+        if "<TRANSFER_TO_MANAGER:" in ai_reply:
+            extracted_info = ai_reply.split("<TRANSFER_TO_MANAGER:")[-1].split(">")[0].strip()
+            
+            # Reset room if needed
+            if not CEKAP_ROOM_ID:
+                await build_cekap_infrastructure()
                 
-                for msg in reversed(messages):
-                    content = getattr(msg, "content", "")
-                    msg_id = getattr(msg, "id", None)
+            # Send details to the Band Room (Manager)
+            mgr_id, mgr_key = AGENTS["agent_manager"]
+            rest_client = AsyncRestClient(api_key=mgr_key, base_url=BAND_URL)
+            
+            await rest_client.agent_api_messages.create_agent_chat_message(
+                CEKAP_ROOM_ID, 
+                message=ChatMessageRequest(
+                    content=f"@agent_manager EMERGENCY REPORT FROM FRONT DESK: {extracted_info}", 
+                    mentions=[ChatMessageRequestMentionsItem(id=mgr_id, name="agent_manager")]
+                )
+            )
+            
+            # Start Polling Band Room for Medical Steps or Mission Success
+            logger.info("Details sent to Manager. Waiting for Support Agents...")
+            
+            for _ in range(15):
+                await asyncio.sleep(2)
+                try:
+                    resp = await rest_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
+                    messages = getattr(resp, "data", [])
                     
-                    if content and msg_id not in processed_msg_ids:
-                        if "[CALLER_INPUT]" in content:
-                            processed_msg_ids.add(msg_id)
-                            continue
-                            
-                        if "MISSION_SUCCESS" in content:
-                            processed_msg_ids.add(msg_id)
-                            CEKAP_ROOM_ID = None 
-                            return {"status": "TERMINATE_CALL", "reply": "Pasukan penyelamat sedang bergegas ke lokasi anda. Panggilan ditamatkan."}
+                    for msg in reversed(messages):
+                        content = getattr(msg, "content", "")
                         
-                        if "CALLER:" in content:
-                            processed_msg_ids.add(msg_id)
-                            clean_reply = content.split("CALLER:")[-1].strip()
-                            clean_reply = re.sub(r'\[\{.*?\}\]', '', clean_reply).replace('"', '')
-                            return {"status": "ACTIVE", "reply": clean_reply}
-            except Exception:
-                pass
+                        if "MISSION_SUCCESS" in content:
+                            CEKAP_ROOM_ID = None # Force new room next time
+                            pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)] # Clear memory
+                            return {"status": "TERMINATE_CALL", "reply": "Maklumat lengkap. Pasukan penyelamat sedang bergegas ke lokasi anda. Talian ditamatkan."}
+                            
+                        if "SYSTEM_MEDICAL_ALERT:" in content:
+                            medical_steps = content.split("SYSTEM_MEDICAL_ALERT:")[-1].strip()
+                            return {"status": "ACTIVE", "reply": f"Sementara menunggu pasukan penyelamat tiba, sila ikuti langkah ini: {medical_steps}"}
+                except Exception:
+                    pass
 
-        return {"status": "ACTIVE", "reply": "Sistem sedang menyelaras maklumat. Sila tunggu..."}
+            return {"status": "ACTIVE", "reply": "Sistem sedang menyelaras unit tindakan di latar belakang. Harap bertenang."}
+
+        # Step 3: Normal Conversation (Not ready to transfer yet)
+        return {"status": "ACTIVE", "reply": ai_reply}
 
     except Exception as e:
-        logger.error(f"Phase 3 Error: {str(e)}")
+        logger.error(f"PWA Processing Error: {str(e)}")
         return {"status": "ERROR", "reply": "System network congestion."}
 
 if __name__ == "__main__":
