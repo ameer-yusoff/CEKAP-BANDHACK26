@@ -77,6 +77,13 @@
             background: var(--accent-glow);
             border-radius: 50%;
             box-shadow: 0 0 10px var(--accent-glow);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.4; }
+            100% { opacity: 1; }
         }
 
         .glass-table-container {
@@ -87,6 +94,7 @@
             border-radius: 12px;
             overflow: hidden;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+            overflow-x: auto;
         }
 
         table {
@@ -107,6 +115,7 @@
             letter-spacing: 1px;
             cursor: pointer;
             transition: background 0.2s;
+            white-space: nowrap;
         }
 
         th:hover {
@@ -124,7 +133,7 @@
         }
 
         tr:hover td {
-            background: rgba(255, 255, 255, 0.01);
+            background: rgba(255, 255, 255, 0.02);
         }
 
         /* Badge Styles */
@@ -136,16 +145,18 @@
             font-size: 0.75rem;
             font-weight: 600;
             letter-spacing: 0.3px;
+            white-space: nowrap;
         }
 
         .priority-critical { background: rgba(255, 77, 77, 0.12); color: var(--critical-red); border: 1px solid rgba(255, 77, 77, 0.2); }
         .priority-high { background: rgba(255, 159, 67, 0.12); color: var(--high-orange); border: 1px solid rgba(255, 159, 67, 0.2); }
         .priority-medium { background: rgba(254, 202, 87, 0.12); color: var(--medium-yellow); border: 1px solid rgba(254, 202, 87, 0.2); }
         .priority-low { background: rgba(84, 160, 255, 0.12); color: var(--low-blue); border: 1px solid rgba(84, 160, 255, 0.2); }
+        .priority-unassigned { background: rgba(139, 152, 165, 0.1); color: var(--text-secondary); border: 1px solid rgba(139, 152, 165, 0.2); }
 
-        .status-triaged { background: rgba(84, 160, 255, 0.1); color: var(--low-blue); }
-        .status-retired_room { background: rgba(139, 152, 165, 0.15); color: var(--text-secondary); }
-        .status-active_room { background: rgba(0, 255, 136, 0.1); color: var(--accent-glow); }
+        .status-triaged { background: rgba(84, 160, 255, 0.1); color: var(--low-blue); border: 1px solid rgba(84, 160, 255, 0.2); }
+        .status-retired_room { background: rgba(139, 152, 165, 0.15); color: var(--text-secondary); border: 1px solid rgba(139, 152, 165, 0.2); }
+        .status-active_room { background: rgba(0, 255, 136, 0.1); color: var(--accent-glow); border: 1px solid rgba(0, 255, 136, 0.2); }
 
         .maps-btn {
             color: var(--accent-glow);
@@ -155,11 +166,15 @@
             gap: 0.4rem;
             font-weight: 500;
             transition: opacity 0.2s;
+            background: rgba(0, 255, 136, 0.1);
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            border: 1px solid rgba(0, 255, 136, 0.2);
         }
 
         .maps-btn:hover {
             opacity: 0.8;
-            text-decoration: underline;
+            background: rgba(0, 255, 136, 0.2);
         }
 
         .empty-state {
@@ -178,7 +193,7 @@
         </div>
         <div class="system-status">
             <div class="status-dot"></div>
-            <span>Live Sync Active</span>
+            <span id="connection-status">Connecting to Supabase...</span>
         </div>
     </header>
 
@@ -191,7 +206,7 @@
                     <th onclick="sortTable(2)">Emergency Type</th>
                     <th onclick="sortTable(3)">Priority</th>
                     <th onclick="sortTable(4)">Injuries</th>
-                    <th onclick="sortTable(5)">Location / Room Reference</th>
+                    <th onclick="sortTable(5)">Location / Coordinates</th>
                     <th onclick="sortTable(6)">Status</th>
                     <th>Action</th>
                 </tr>
@@ -205,22 +220,37 @@
     </main>
 
     <script>
-        // PLACEHOLDERS FOR VERCEL BUILD-TIME INJECTION
+        // PENTING: JANGAN GUNAKAN `import.meta.env` DI SINI.
+        // Gunakan placeholder string biasa. Vercel akan override string ini semasa Build Command.
         const SUPABASE_URL = "V_SUPABASE_URL";
         const SUPABASE_KEY = "V_SUPABASE_KEY";
 
         let supabaseClientInstance = null;
 
         function initSupabase() {
+            const statusIndicator = document.getElementById('connection-status');
+            const statusDot = document.querySelector('.status-dot');
+
+            // Semak jika placeholder belum ditukar oleh Vercel
             if (SUPABASE_URL === "V_SUPABASE_URL" || SUPABASE_KEY === "V_SUPABASE_KEY") {
-                console.warn("Supabase placeholders detected. Awaiting Vercel injection script.");
+                console.error("Vercel Injection Failed: Placholder is still 'V_SUPABASE_URL'. Please check your Vercel Build Command.");
+                statusIndicator.innerText = "Injection Error: Check Console";
+                statusDot.style.background = "var(--critical-red)";
+                statusDot.style.boxShadow = "0 0 10px var(--critical-red)";
                 return false;
             }
+
             try {
+                // Initialize Supabase from the globally loaded CDN script
                 supabaseClientInstance = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+                statusIndicator.innerText = "Live Sync Active";
+                statusDot.style.background = "var(--accent-glow)";
+                statusDot.style.boxShadow = "0 0 10px var(--accent-glow)";
                 return true;
             } catch (err) {
                 console.error("Supabase initialization failed:", err);
+                statusIndicator.innerText = "Connection Failed";
+                statusDot.style.background = "var(--critical-red)";
                 return false;
             }
         }
@@ -230,64 +260,71 @@
                 if (!initSupabase()) return;
             }
 
-            // Fetch rows from table and order from newest to oldest
-            const { data, error } = await supabaseClientInstance
-                .from('emergency_logs')
-                .select('*')
-                .order('created_at', { ascending: false });
+            try {
+                // Ambil data dari table emergency_logs (Abaikan bilik setup sistem "ACTIVE_ROOM")
+                const { data, error } = await supabaseClientInstance
+                    .from('emergency_logs')
+                    .select('*')
+                    .neq('status', 'ACTIVE_ROOM') 
+                    .neq('status', 'RETIRED_ROOM')
+                    .order('created_at', { ascending: false });
 
-            if (error) {
-                console.error('Error streaming data from Supabase:', error);
-                return;
-            }
+                if (error) {
+                    console.error('Error fetching data from Supabase:', error);
+                    return;
+                }
 
-            const tableBody = document.getElementById('logsTableBody');
-            tableBody.innerHTML = '';
-
-            if (!data || data.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="8" class="empty-state">No emergency logs recorded yet.</td></tr>`;
-                return;
-            }
-
-            data.forEach(log => {
-                const tr = document.createElement('tr');
+                const tableBody = document.getElementById('logsTableBody');
                 
-                // Parse fields with strict alignment to your PostgreSQL table structure
-                const id = log.id || '-';
-                const timestamp = log.created_at ? new Date(log.created_at).toLocaleString() : '-';
-                const type = log.emergency_type || '-';
-                const priority = log.priority_level || 'UNASSIGNED';
-                const injuries = log.injuries || 'None';
-                const location = log.raw_location || '-';
-                const status = log.status || '-';
-                
-                // Clean display mapping for badge classes
-                const priorityClass = priority.toLowerCase();
-                const statusClass = status.toLowerCase().replace(' ', '_');
+                if (!data || data.length === 0) {
+                    tableBody.innerHTML = `<tr><td colspan="8" class="empty-state">No active emergency logs currently.</td></tr>`;
+                    return;
+                }
 
-                tr.innerHTML = `
-                    <td><strong>#${id}</strong></td>
-                    <td style="color: var(--text-secondary); font-size: 0.85rem;">${timestamp}</td>
-                    <td style="font-weight: 500;">${type}</td>
-                    <td><span class="badge priority-${priorityClass}">${priority}</span></td>
-                    <td>${injuries}</td>
-                    <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">${location}</td>
-                    <td><span class="badge status-${statusClass}">${status}</span></td>
-                    <td>
-                        ${log.maps_link ? 
-                            `<a href="${log.maps_link}" target="_blank" class="maps-btn">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
-                                Route
-                             </a>` : 
-                            `<span style="color: var(--text-secondary); font-size: 0.85rem;">No Map</span>`
-                        }
-                    </td>
-                `;
-                tableBody.appendChild(tr);
-            });
+                tableBody.innerHTML = ''; // Clear table before inserting new rows
+
+                data.forEach(log => {
+                    const tr = document.createElement('tr');
+                    
+                    // Parse Data Safely
+                    const id = log.id || '-';
+                    const timestamp = log.created_at ? new Date(log.created_at).toLocaleString() : '-';
+                    const type = log.emergency_type || '-';
+                    const priority = log.priority_level || 'UNASSIGNED';
+                    const injuries = log.injuries || 'None';
+                    const location = log.raw_location || '-';
+                    const status = log.status || '-';
+                    
+                    // Generate CSS Classes
+                    const priorityClass = priority.toLowerCase();
+                    const statusClass = status.toLowerCase().replace(' ', '_');
+
+                    // Map URL handling (If empty, disable button)
+                    const mapButton = log.maps_link 
+                        ? `<a href="${log.maps_link}" target="_blank" class="maps-btn">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                            View Map
+                           </a>` 
+                        : `<span style="color: var(--text-secondary); font-size: 0.85rem;">Pending Geo</span>`;
+
+                    tr.innerHTML = `
+                        <td><strong>#${id}</strong></td>
+                        <td style="color: var(--text-secondary); font-size: 0.85rem;">${timestamp}</td>
+                        <td style="font-weight: 500;">${type}</td>
+                        <td><span class="badge priority-${priorityClass}">${priority}</span></td>
+                        <td>${injuries}</td>
+                        <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">${location}</td>
+                        <td><span class="badge status-${statusClass}">${status}</span></td>
+                        <td>${mapButton}</td>
+                    `;
+                    tableBody.appendChild(tr);
+                });
+            } catch (err) {
+                console.error('Fetch operation crashed:', err);
+            }
         }
 
-        // Sorting functionality for column heads
+        // Fungsi Sort Table
         function sortTable(n) {
             const table = document.querySelector("table");
             let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
@@ -325,11 +362,11 @@
             }
         }
 
-        // Initialize execution on content load
+        // Initialize script once DOM is loaded
         document.addEventListener('DOMContentLoaded', () => {
             initSupabase();
             fetchLogs();
-            // Real-time polling fallback loop (every 5 seconds)
+            // Polling database setiap 5 saat untuk update data live
             setInterval(fetchLogs, 5000);
         });
     </script>
