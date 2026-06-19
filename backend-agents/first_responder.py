@@ -26,14 +26,10 @@ from manager_agent import main as manager_main
 from medical_agent import main as medical_main
 from triage_agent import main as triage_main
 
-# Log Configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-# ==========================================
-# 1. CREDENTIAL MANAGEMENT & GLOBALS
-# ==========================================
 AGENTS = {
     "first_responder": load_agent_config("first_responder"),
     "agent_manager": load_agent_config("agent_manager"),
@@ -47,9 +43,6 @@ BAND_URL = os.getenv("THENVOI_REST_URL", "https://app.thenvoi.com").rstrip("/")
 CEKAP_ROOM_ID = None
 processed_msg_ids = set()
 
-# ==========================================
-# 2. PHASE 1 & 2: DYNAMIC INFRASTRUCTURE
-# ==========================================
 async def build_cekap_infrastructure():
     global CEKAP_ROOM_ID
     logger.info("Starting DYNAMIC CEKAP infrastructure build...")
@@ -105,9 +98,6 @@ async def build_cekap_infrastructure():
     except Exception as e:
         logger.error(f"Infrastructure build failed: {str(e)}")
 
-# ==========================================
-# FIRST RESPONDER AI BRAIN
-# ==========================================
 async def first_responder_main():
     agent_id, api_key = AGENTS["first_responder"]
     llm = ChatOpenAI(
@@ -120,9 +110,6 @@ async def first_responder_main():
     agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
     await agent.run()
 
-# ==========================================
-# 3. SERVER & STAGGERED BOOT
-# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await build_cekap_infrastructure()
@@ -146,19 +133,22 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 class ChatRequest(BaseModel):
     message: str
 
-# ==========================================
-# 4. PHASE 3: PWA ENDPOINT (CLEAN RELAY)
-# ==========================================
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
     global processed_msg_ids, CEKAP_ROOM_ID
     
-    # AUTOMATED RESET: Build new room if previous was retired/completed
+    supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+    
+    # SYSTEM RESET CHECK: If DB says room is retired, reset global ID
+    if CEKAP_ROOM_ID:
+        res = supabase.table("emergency_logs").select("status").eq("raw_location", CEKAP_ROOM_ID).execute()
+        if res.data and len(res.data) > 0 and res.data[0]["status"] != "ACTIVE_ROOM":
+            CEKAP_ROOM_ID = None
+
     if not CEKAP_ROOM_ID:
         await build_cekap_infrastructure()
-        
-    if not CEKAP_ROOM_ID:
-        return {"status": "ACTIVE", "reply": "System is booting up, please wait..."}
+        if not CEKAP_ROOM_ID:
+            return {"status": "ACTIVE", "reply": "System is booting up, please wait..."}
 
     user_text = request.message.strip()
     
@@ -167,68 +157,56 @@ async def handle_chat(request: ChatRequest):
         disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
         fr_id, _ = AGENTS["first_responder"]
         
-        # --- PRELOAD OLD MESSAGES TO AVOID GHOSTING ---
         try:
             old_msgs = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
             for m in getattr(old_msgs, "data", []):
                 processed_msg_ids.add(getattr(m, "id"))
-        except Exception as e:
-            logger.warning(f"Failed to preload messages: {e}")
+        except Exception:
+            pass
 
-        # Inject Caller's Message
-        logger.info(f"Injecting message from Caller: {user_text}")
+        # Force context directly to First Responder to demand an answer
+        logger.info(f"Injecting message to First Responder: {user_text}")
         send_resp = await disp_client.agent_api_messages.create_agent_chat_message(
             CEKAP_ROOM_ID, 
             message=ChatMessageRequest(
-                content=f"@first_responder [CALLER_INPUT]: {user_text}", 
+                content=f"@first_responder You MUST reply to the caller: [CALLER_INPUT] {user_text}", 
                 mentions=[ChatMessageRequestMentionsItem(id=fr_id, name="first_responder")]
             )
         )
         
-        # Add our own injected message to processed list so we don't read it back
         my_msg_id = getattr(getattr(send_resp, "data", None), "id", None)
         if my_msg_id:
             processed_msg_ids.add(my_msg_id)
         
-        # Poll aggressively for 30 seconds to catch the AI's response
-        for _ in range(15):
+        for _ in range(15): # 30 seconds polling
             await asyncio.sleep(2)
             try:
-                # READ-ONLY polling
                 resp = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
                 messages = getattr(resp, "data", [])
                 
-                # Check chronologically (oldest to newest)
                 for msg in reversed(messages):
                     content = getattr(msg, "content", "")
                     msg_id = getattr(msg, "id", None)
                     
                     if content and msg_id not in processed_msg_ids:
-                        # Ignore messages that are just system inputs
                         if "[CALLER_INPUT]" in content:
                             processed_msg_ids.add(msg_id)
                             continue
                             
-                        # Trigger system termination upon successful dispatch
                         if "MISSION_SUCCESS" in content:
                             processed_msg_ids.add(msg_id)
-                            CEKAP_ROOM_ID = None # Force the next caller to generate a new room
+                            CEKAP_ROOM_ID = None 
                             return {"status": "TERMINATE_CALL", "reply": "Pasukan penyelamat sedang bergegas ke lokasi anda. Panggilan ditamatkan."}
                         
-                        # Cleanly extract messages meant for the Caller
                         if "CALLER:" in content:
                             processed_msg_ids.add(msg_id)
                             clean_reply = content.split("CALLER:")[-1].strip()
-                            # Remove stray JSON or tool markings just in case
                             clean_reply = re.sub(r'\[\{.*?\}\]', '', clean_reply).replace('"', '')
                             return {"status": "ACTIVE", "reply": clean_reply}
-                            
-            except Exception as inner_e:
-                logger.debug(f"Polling loop skip: {inner_e}")
+            except Exception:
                 pass
 
-        # If 30 seconds pass without CALLER: or MISSION_SUCCESS, send default
-        return {"status": "ACTIVE", "reply": "Sistem sedang menyelaras unit tindakan. Sila tunggu..."}
+        return {"status": "ACTIVE", "reply": "Sistem sedang menyelaras maklumat. Sila tunggu..."}
 
     except Exception as e:
         logger.error(f"Phase 3 Error: {str(e)}")
