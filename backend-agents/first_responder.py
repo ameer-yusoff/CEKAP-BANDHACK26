@@ -162,15 +162,15 @@ async def handle_chat(request: ChatRequest):
     user_text = request.message.strip()
     
     try:
-        # Use dispatcher to inject caller's message so First Responder sees it as an external prompt
         disp_id, disp_key = AGENTS["dispatcher"]
         disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
         fr_id, _ = AGENTS["first_responder"]
         
+        # THE POISON PILL FIX: Exact @first_responder string included in payload
         await disp_client.agent_api_messages.create_agent_chat_message(
             CEKAP_ROOM_ID, 
             message=ChatMessageRequest(
-                content=f"SYSTEM_RELAY_FROM_CALLER: {user_text}", 
+                content=f"@first_responder [CALLER_INPUT]: {user_text}", 
                 mentions=[ChatMessageRequestMentionsItem(id=fr_id, name="first_responder")]
             )
         )
@@ -179,22 +179,22 @@ async def handle_chat(request: ChatRequest):
         for _ in range(15):
             await asyncio.sleep(2)
             try:
-                # Use get_agent_chat_messages (READ-ONLY) to avoid 422 Conflict Error
+                # Use get_agent_chat_messages (READ-ONLY) to avoid 422 Validation Error
                 resp = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
                 messages = getattr(resp, "data", [])
                 
-                if messages:
-                    latest_msg = messages[0] # The most recent message
-                    content = getattr(latest_msg, "content", "")
-                    msg_id = getattr(latest_msg, "id", None)
+                # Check chronologically (oldest to newest) to process properly
+                for msg in reversed(messages):
+                    content = getattr(msg, "content", "")
+                    msg_id = getattr(msg, "id", None)
                     
                     if content and msg_id not in processed_msg_ids:
                         processed_msg_ids.add(msg_id)
                         
-                        # Trigger system reset upon successful dispatch
+                        # Trigger system termination upon successful dispatch
                         if "MISSION_SUCCESS" in content:
                             CEKAP_ROOM_ID = None # Force the next caller to generate a new room
-                            return {"status": "TERMINATE_CALL", "reply": "Rescue units have been successfully dispatched. Terminating call safely."}
+                            return {"status": "TERMINATE_CALL", "reply": "Pasukan penyelamat sedang bergegas ke lokasi anda. Panggilan ditamatkan."}
                         
                         # Cleanly extract messages meant for the Caller
                         if "CALLER:" in content:
@@ -203,7 +203,7 @@ async def handle_chat(request: ChatRequest):
             except Exception:
                 pass
 
-        return {"status": "ACTIVE", "reply": "System is coordinating units in the background. Please hold..."}
+        return {"status": "ACTIVE", "reply": "Sistem sedang menyelaras unit tindakan. Sila tunggu..."}
 
     except Exception as e:
         logger.error(f"Phase 3 Error: {str(e)}")
