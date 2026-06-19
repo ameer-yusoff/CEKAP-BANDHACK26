@@ -3,170 +3,296 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CEKAP - Command Center</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <title>CEKAP - Emergency Command Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
         :root {
-            --bg-dark: #0B0F19;
-            --text-primary: #FFFFFF;
-            --text-secondary: #8B949E;
-            --danger-red: #FF4D4D;
+            --bg-dark: #080B11;
+            --panel-glass: rgba(13, 17, 28, 0.7);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --text-primary: #F0F3F8;
+            --text-secondary: #8B98A5;
+            --accent-glow: #00ff88;
+            --critical-red: #FF4D4D;
+            --high-orange: #FF9F43;
+            --medium-yellow: #FECA57;
+            --low-blue: #54A0FF;
+        }
+
+        * {
+            box-sizing: border-box;
+            font-family: 'Inter', sans-serif;
         }
 
         body {
             margin: 0;
-            padding: 2rem;
+            padding: 2.5rem;
             background: var(--bg-dark);
             color: var(--text-primary);
-            font-family: 'Inter', sans-serif;
             min-height: 100vh;
+            background-image: radial-gradient(circle at 50% -20%, #161F30 0%, var(--bg-dark) 70%);
         }
 
         .dashboard-header {
-            margin-bottom: 2rem;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            padding-bottom: 1rem;
+            margin-bottom: 2.5rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border-glass);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .dashboard-title h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            background: linear-gradient(90deg, #FFFFFF, #8B98A5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .dashboard-title p {
+            margin: 0.25rem 0 0 0;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .system-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            background: rgba(255, 255, 255, 0.03);
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            border: 1px solid var(--border-glass);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent-glow);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--accent-glow);
         }
 
         .glass-table-container {
-            background: rgba(255, 255, 255, 0.03);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border-radius: 16px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-            overflow-x: auto;
+            background: var(--panel-glass);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-glass);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
             text-align: left;
-        }
-
-        th {
-            background: rgba(255, 255, 255, 0.05);
-            padding: 1rem;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            font-size: 0.8rem;
-            letter-spacing: 1px;
-            cursor: pointer;
-        }
-        
-        th:hover {
-            color: var(--text-primary);
-        }
-
-        td {
-            padding: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
             font-size: 0.9rem;
         }
 
-        .priority-P1 { color: var(--danger-red); font-weight: bold; }
-        .priority-P2 { color: #FFA500; }
-        .priority-P3 { color: #FFFF00; }
-        
-        a.map-link {
-            color: #58A6FF;
-            text-decoration: none;
+        th {
+            background: rgba(255, 255, 255, 0.02);
+            padding: 1.2rem 1rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border-glass);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: background 0.2s;
         }
-        a.map-link:hover { text-decoration: underline; }
+
+        th:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        td {
+            padding: 1.2rem 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            color: var(--text-primary);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        /* Badge Styles */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+
+        .priority-critical { background: rgba(255, 77, 77, 0.12); color: var(--critical-red); border: 1px solid rgba(255, 77, 77, 0.2); }
+        .priority-high { background: rgba(255, 159, 67, 0.12); color: var(--high-orange); border: 1px solid rgba(255, 159, 67, 0.2); }
+        .priority-medium { background: rgba(254, 202, 87, 0.12); color: var(--medium-yellow); border: 1px solid rgba(254, 202, 87, 0.2); }
+        .priority-low { background: rgba(84, 160, 255, 0.12); color: var(--low-blue); border: 1px solid rgba(84, 160, 255, 0.2); }
+
+        .status-triaged { background: rgba(84, 160, 255, 0.1); color: var(--low-blue); }
+        .status-retired_room { background: rgba(139, 152, 165, 0.15); color: var(--text-secondary); }
+        .status-active_room { background: rgba(0, 255, 136, 0.1); color: var(--accent-glow); }
+
+        .maps-btn {
+            color: var(--accent-glow);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-weight: 500;
+            transition: opacity 0.2s;
+        }
+
+        .maps-btn:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-secondary);
+        }
     </style>
 </head>
 <body>
 
-    <div class="dashboard-header">
-        <h1>CEKAP Command Center</h1>
-        <p style="color: var(--text-secondary)">Real-time Multi-Agent Emergency Logs</p>
-    </div>
+    <header class="dashboard-header">
+        <div class="dashboard-title">
+            <h1>CEKAP Command Center</h1>
+            <p>Real-time centralized emergency log stream and response infrastructure</p>
+        </div>
+        <div class="system-status">
+            <div class="status-dot"></div>
+            <span>Live Sync Active</span>
+        </div>
+    </header>
 
-    <div class="glass-table-container">
-        <table id="logsTable">
+    <main class="glass-table-container">
+        <table>
             <thead>
                 <tr>
-                    <th onclick="sortTable(0)">ID ↕</th>
-                    <th onclick="sortTable(1)">Emergency Type ↕</th>
-                    <th onclick="sortTable(2)">Priority ↕</th>
-                    <th>Location</th>
-                    <th>Status</th>
+                    <th onclick="sortTable(0)">ID</th>
+                    <th onclick="sortTable(1)">Timestamp</th>
+                    <th onclick="sortTable(2)">Emergency Type</th>
+                    <th onclick="sortTable(3)">Priority</th>
+                    <th onclick="sortTable(4)">Injuries</th>
+                    <th onclick="sortTable(5)">Location / Room Reference</th>
+                    <th onclick="sortTable(6)">Status</th>
+                    <th>Action</th>
                 </tr>
             </thead>
-            <tbody id="tableBody">
-                </tbody>
+            <tbody id="logsTableBody">
+                <tr>
+                    <td colspan="8" class="empty-state">Loading real-time data stream...</td>
+                </tr>
+            </tbody>
         </table>
-    </div>
+    </main>
 
     <script>
-        let supabase = null;
+        // PLACEHOLDERS FOR VERCEL BUILD-TIME INJECTION
+        const SUPABASE_URL = "V_SUPABASE_URL";
+        const SUPABASE_KEY = "V_SUPABASE_KEY";
 
-        async function initSupabase() {
+        let supabaseClientInstance = null;
+
+        function initSupabase() {
+            if (SUPABASE_URL === "V_SUPABASE_URL" || SUPABASE_KEY === "V_SUPABASE_KEY") {
+                console.warn("Supabase placeholders detected. Awaiting Vercel injection script.");
+                return false;
+            }
             try {
-                // Try to fetch config from backend endpoint
-                const response = await fetch('/api/config');
-                if (response.ok) {
-                    const config = await response.json();
-                    const SUPABASE_URL = "V_SUPABASE_URL";
-                    const SUPABASE_KEY = "V_SUPABASE_KEY";
-
-                    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-                } else {
-                    // Fallback: try to read from browser environment or localStorage
-                    const supabaseUrl = localStorage.getItem('SUPABASE_URL') || import.meta.env?.VITE_SUPABASE_URL;
-                    const supabaseKey = localStorage.getItem('SUPABASE_KEY') || import.meta.env?.VITE_SUPABASE_KEY;
-                    
-                    if (!supabaseUrl || !supabaseKey) {
-                        throw new Error('Supabase configuration not found. Please configure SUPABASE_URL and SUPABASE_KEY.');
-                    }
-                    supabase = supabaseClient.createClient(supabaseUrl, supabaseKey);
-                }
-            } catch (error) {
-                console.error('Failed to initialize Supabase:', error);
-                document.body.innerHTML = `<h1 style="color: red; padding: 2rem;">Error: ${error.message}</h1>`;
+                supabaseClientInstance = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+                return true;
+            } catch (err) {
+                console.error("Supabase initialization failed:", err);
+                return false;
             }
         }
 
         async function fetchLogs() {
-            // Mengambil data dari Supabase, dan menapis keluar log "Sistem/Bilik"
-            const { data, error } = await supabase
+            if (!supabaseClientInstance) {
+                if (!initSupabase()) return;
+            }
+
+            // Fetch rows from table and order from newest to oldest
+            const { data, error } = await supabaseClientInstance
                 .from('emergency_logs')
                 .select('*')
-                .neq('status', 'ACTIVE_ROOM') // Menapis log pembuatan bilik sistem
                 .order('created_at', { ascending: false });
 
             if (error) {
-                console.error('Error fetching logs:', error);
+                console.error('Error streaming data from Supabase:', error);
                 return;
             }
 
-            const tableBody = document.getElementById('logsTableBody'); // Pastikan ID ini sama dengan ID <tbody> anda
+            const tableBody = document.getElementById('logsTableBody');
             tableBody.innerHTML = '';
+
+            if (!data || data.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="8" class="empty-state">No emergency logs recorded yet.</td></tr>`;
+                return;
+            }
 
             data.forEach(log => {
                 const tr = document.createElement('tr');
                 
-                // Padanan nama mesti TEPAT dengan SQL (cth: log.raw_location, log.emergency_type)
+                // Parse fields with strict alignment to your PostgreSQL table structure
+                const id = log.id || '-';
+                const timestamp = log.created_at ? new Date(log.created_at).toLocaleString() : '-';
+                const type = log.emergency_type || '-';
+                const priority = log.priority_level || 'UNASSIGNED';
+                const injuries = log.injuries || 'None';
+                const location = log.raw_location || '-';
+                const status = log.status || '-';
+                
+                // Clean display mapping for badge classes
+                const priorityClass = priority.toLowerCase();
+                const statusClass = status.toLowerCase().replace(' ', '_');
+
                 tr.innerHTML = `
-                    <td>${log.id || '-'}</td>
-                    <td>${new Date(log.created_at).toLocaleString()}</td>
-                    <td>${log.emergency_type || '-'}</td>
-                    <td><span class="badge priority-${(log.priority_level || '').toLowerCase()}">${log.priority_level || '-'}</span></td>
-                    <td>${log.injuries || 'None'}</td>
-                    <td>${log.raw_location || '-'}</td>
-                    <td><span class="badge status-${(log.status || '').toLowerCase()}">${log.status || '-'}</span></td>
-                    <td>${log.maps_link ? `<a href="${log.maps_link}" target="_blank" style="color: #00ff88;">View Map</a>` : 'N/A'}</td>
+                    <td><strong>#${id}</strong></td>
+                    <td style="color: var(--text-secondary); font-size: 0.85rem;">${timestamp}</td>
+                    <td style="font-weight: 500;">${type}</td>
+                    <td><span class="badge priority-${priorityClass}">${priority}</span></td>
+                    <td>${injuries}</td>
+                    <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">${location}</td>
+                    <td><span class="badge status-${statusClass}">${status}</span></td>
+                    <td>
+                        ${log.maps_link ? 
+                            `<a href="${log.maps_link}" target="_blank" class="maps-btn">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                                Route
+                             </a>` : 
+                            `<span style="color: var(--text-secondary); font-size: 0.85rem;">No Map</span>`
+                        }
+                    </td>
                 `;
                 tableBody.appendChild(tr);
             });
         }
 
+        // Sorting functionality for column heads
         function sortTable(n) {
-            var table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
-            table = document.getElementById("logsTable");
+            const table = document.querySelector("table");
+            let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
             switching = true;
-            dir = "asc"; 
+            dir = "asc";
             while (switching) {
                 switching = false;
                 rows = table.rows;
@@ -189,7 +315,7 @@
                 if (shouldSwitch) {
                     rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
                     switching = true;
-                    switchcount ++; 
+                    switchcount++;
                 } else {
                     if (switchcount == 0 && dir == "asc") {
                         dir = "desc";
@@ -199,9 +325,11 @@
             }
         }
 
-        // Initialize Supabase and start fetching logs
-        initSupabase().then(() => {
+        // Initialize execution on content load
+        document.addEventListener('DOMContentLoaded', () => {
+            initSupabase();
             fetchLogs();
+            // Real-time polling fallback loop (every 5 seconds)
             setInterval(fetchLogs, 5000);
         });
     </script>
