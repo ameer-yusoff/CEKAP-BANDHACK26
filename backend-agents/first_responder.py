@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import re
-import uuid
 from dotenv import load_dotenv
 
 from fastapi import FastAPI
@@ -43,8 +42,9 @@ AGENTS = {
 
 BAND_URL = os.getenv("THENVOI_REST_URL", "https://app.thenvoi.com").rstrip("/")
 CEKAP_ROOM_ID = None
+medical_alert_given = False # Track if medical advice was already given to caller
 
-# LOCAL MEMORY FOR FIRST RESPONDER (Lightning Fast PWA)
+# LOCAL MEMORY FOR FIRST RESPONDER
 pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)]
 local_llm = ChatOpenAI(
     model="deepseek/deepseek-chat",
@@ -78,7 +78,7 @@ async def build_cekap_infrastructure():
         except Exception:
             pass
         
-        # Add all support agents
+        # Add all support agents (except First Responder, because FR is now LOCAL)
         for name, (agent_id, api_key) in AGENTS.items():
             if name == "first_responder": continue 
             await rest_client.agent_api_participants.add_agent_chat_participant(
@@ -94,7 +94,7 @@ async def build_cekap_infrastructure():
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await build_cekap_infrastructure()
+    # Do not pre-build room here. Let the first call trigger it.
     agent_tasks = []
     
     async def start_agents_staggered():
@@ -120,10 +120,10 @@ class ChatRequest(BaseModel):
 # ==========================================
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
-    global CEKAP_ROOM_ID, pwa_chat_memory
+    global CEKAP_ROOM_ID, pwa_chat_memory, medical_alert_given
     user_text = request.message.strip()
 
-    # Step 1: Direct Local Chat with Caller (Lightning Fast)
+    # Step 1: Direct Local Chat with Caller
     pwa_chat_memory.append(HumanMessage(content=user_text))
     
     try:
@@ -131,19 +131,21 @@ async def handle_chat(request: ChatRequest):
         ai_reply = response.content.strip()
         pwa_chat_memory.append(AIMessage(content=ai_reply))
         
-        # Step 2: Did the AI gather enough info to transfer?
+        # Step 2: Handoff to Manager (If complete info gathered)
         if "<TRANSFER_TO_MANAGER:" in ai_reply:
             extracted_info = ai_reply.split("<TRANSFER_TO_MANAGER:")[-1].split(">")[0].strip()
+            medical_alert_given = False # Reset medical alert flag
             
-            # Reset room if needed
+            # Ensure a clean room exists
             if not CEKAP_ROOM_ID:
                 await build_cekap_infrastructure()
                 
             # Send details to the Band Room (Manager)
             fr_id, fr_key = AGENTS["first_responder"]
             mgr_id, _ = AGENTS["agent_manager"]
-            rest_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL) # FIX 3: Authenticate as First Responder
+            rest_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
             
+            logger.info("Handing off to Manager. Starting Support Agent Workflow...")
             await rest_client.agent_api_messages.create_agent_chat_message(
                 CEKAP_ROOM_ID, 
                 message=ChatMessageRequest(
@@ -152,37 +154,45 @@ async def handle_chat(request: ChatRequest):
                 )
             )
             
-            # Start Polling Band Room for Medical Steps or Mission Success
-            logger.info("Details sent to Manager. Waiting for Support Agents...")
-            
-            for _ in range(15):
+            # Step 3: Polling for Medical Steps or Final Dispatch
+            for _ in range(25): # Increased to 50 seconds to give agents time to process
                 await asyncio.sleep(2)
                 try:
                     resp = await rest_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
                     messages = getattr(resp, "data", [])
                     
-                    for msg in reversed(messages):
+                    for msg in messages: # Check latest messages
                         content = getattr(msg, "content", "")
                         
+                        # Catch Medical Instructions FIRST
+                        if "SYSTEM_MEDICAL_ALERT:" in content and not medical_alert_given:
+                            medical_steps = content.split("SYSTEM_MEDICAL_ALERT:")[-1].strip()
+                            medical_alert_given = True
+                            return {"status": "ACTIVE", "reply": f"Harap bertenang. Sila ikuti langkah kecemasan ini: {medical_steps}"}
+                            
+                        # Catch Final Dispatch Success
                         if "MISSION_SUCCESS" in content:
-                            CEKAP_ROOM_ID = None # Force new room next time
-                            pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)] # Clear memory
+                            CEKAP_ROOM_ID = None # Retire Room
+                            pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)] # Clear Memory
                             return {"status": "TERMINATE_CALL", "reply": "Maklumat lengkap. Pasukan penyelamat sedang bergegas ke lokasi anda. Talian ditamatkan."}
                             
-                        if "SYSTEM_MEDICAL_ALERT:" in content:
-                            medical_steps = content.split("SYSTEM_MEDICAL_ALERT:")[-1].strip()
-                            return {"status": "ACTIVE", "reply": f"Sementara menunggu pasukan penyelamat tiba, sila ikuti langkah ini: {medical_steps}"}
                 except Exception:
                     pass
 
-            return {"status": "ACTIVE", "reply": "Sistem sedang menyelaras unit tindakan di latar belakang. Harap bertenang."}
+            return {"status": "ACTIVE", "reply": "Sistem sedang mengesahkan koordinat GPS lokasi anda. Sila kekal di talian..."}
 
-        # Step 3: Normal Conversation (Not ready to transfer yet)
-        return {"status": "ACTIVE", "reply": ai_reply}
+        # Step 4: Normal Conversation (Still asking questions)
+        # Prevent the <TRANSFER_TO_MANAGER> code from showing on the UI just in case
+        clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
+        
+        if not clean_ui_reply:
+            return {"status": "ACTIVE", "reply": "Sistem sedang memproses. Sila tunggu sebentar..."}
+            
+        return {"status": "ACTIVE", "reply": clean_ui_reply}
 
     except Exception as e:
         logger.error(f"PWA Processing Error: {str(e)}")
-        return {"status": "ERROR", "reply": "System network congestion."}
+        return {"status": "ERROR", "reply": "Sistem mengalami gangguan."}
 
 if __name__ == "__main__":
     import uvicorn
