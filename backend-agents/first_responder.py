@@ -60,8 +60,8 @@ async def build_cekap_infrastructure():
     logger.info("Starting DYNAMIC CEKAP infrastructure build...")
     
     try:
-        mgr_id, mgr_key = AGENTS["agent_manager"]
-        rest_client = AsyncRestClient(api_key=mgr_key, base_url=BAND_URL)
+        fr_id, fr_key = AGENTS["first_responder"]
+        rest_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
         supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
         
         # Always create a fresh room for a new mission
@@ -77,9 +77,9 @@ async def build_cekap_infrastructure():
         except Exception:
             pass
         
-        # Add all support agents (except First Responder, because FR is now LOCAL)
+        # Add all support agents
         for name, (agent_id, api_key) in AGENTS.items():
-            if name == "agent_manager": continue 
+            if name == "first_responder": continue 
             await rest_client.agent_api_participants.add_agent_chat_participant(
                 CEKAP_ROOM_ID, participant=ParticipantRequest(participant_id=agent_id, role="member")
             )
@@ -139,8 +139,9 @@ async def handle_chat(request: ChatRequest):
                 await build_cekap_infrastructure()
                 
             # Send details to the Band Room (Manager)
-            mgr_id, mgr_key = AGENTS["agent_manager"]
-            rest_client = AsyncRestClient(api_key=mgr_key, base_url=BAND_URL)
+            fr_id, fr_key = AGENTS["first_responder"]
+            mgr_id, _ = AGENTS["agent_manager"]
+            rest_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL) # FIX 3: Authenticate as First Responder
             
             await rest_client.agent_api_messages.create_agent_chat_message(
                 CEKAP_ROOM_ID, 
