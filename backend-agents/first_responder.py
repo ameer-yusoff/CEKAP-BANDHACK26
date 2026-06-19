@@ -33,6 +33,7 @@ load_dotenv()
 # 1. CREDENTIALS & GLOBALS
 # ==========================================
 AGENTS = {
+    "first_responder": load_agent_config("first_responder"),
     "agent_manager": load_agent_config("agent_manager"),
     "triage_diagnoser": load_agent_config("triage_diagnoser"),
     "geo_specialist": load_agent_config("geo_specialist"),
