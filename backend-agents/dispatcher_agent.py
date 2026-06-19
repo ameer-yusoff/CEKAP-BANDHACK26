@@ -35,7 +35,7 @@ def send_telegram_dispatch(record_id: str, emergency_details: str, latitude: str
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": f"🚨 *EMERGENCY DISPATCH* 🚨\n\n*ID:* {record_id}\n*Details:* {emergency_details}\n*Location:* [Google Maps]({maps_link})",
+        "text": f"🚨 *EMERGENCY DISPATCH* 🚨\n\n*Details:* {emergency_details}\n*Location:* [Google Maps]({maps_link})",
         "parse_mode": "Markdown"
     }
     
