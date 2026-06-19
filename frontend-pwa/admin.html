@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CEKAP - Emergency Command Center</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
+    <script src="env-config.js"></script>
+
     <style>
         :root {
             --bg-dark: #080B11;
@@ -136,7 +140,6 @@
             background: rgba(255, 255, 255, 0.02);
         }
 
-        /* Badge Styles */
         .badge {
             display: inline-flex;
             align-items: center;
@@ -220,29 +223,24 @@
     </main>
 
     <script>
-        // PENTING: JANGAN GUNAKAN `import.meta.env` DI SINI.
-        // Gunakan placeholder string biasa. Vercel akan override string ini semasa Build Command.
-        const SUPABASE_URL = "V_SUPABASE_URL";
-        const SUPABASE_KEY = "V_SUPABASE_KEY";
-
         let supabaseClientInstance = null;
 
         function initSupabase() {
             const statusIndicator = document.getElementById('connection-status');
             const statusDot = document.querySelector('.status-dot');
 
-            // Semak jika placeholder belum ditukar oleh Vercel
-            if (SUPABASE_URL === "V_SUPABASE_URL" || SUPABASE_KEY === "V_SUPABASE_KEY") {
-                console.error("Vercel Injection Failed: Placholder is still 'V_SUPABASE_URL'. Please check your Vercel Build Command.");
-                statusIndicator.innerText = "Injection Error: Check Console";
+            // Menyemak sama ada fail env-config.js telah dijana oleh Vercel
+            if (typeof window.ENV === 'undefined' || !window.ENV.SUPABASE_URL) {
+                console.error("Vercel Build Error: env-config.js is missing or empty.");
+                statusIndicator.innerText = "System Error: Missing ENV configuration";
                 statusDot.style.background = "var(--critical-red)";
                 statusDot.style.boxShadow = "0 0 10px var(--critical-red)";
                 return false;
             }
 
             try {
-                // Initialize Supabase from the globally loaded CDN script
-                supabaseClientInstance = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+                // Initialize menggunakan variable yang telah disuntik
+                supabaseClientInstance = supabase.createClient(window.ENV.SUPABASE_URL, window.ENV.SUPABASE_KEY);
                 statusIndicator.innerText = "Live Sync Active";
                 statusDot.style.background = "var(--accent-glow)";
                 statusDot.style.boxShadow = "0 0 10px var(--accent-glow)";
@@ -261,7 +259,6 @@
             }
 
             try {
-                // Ambil data dari table emergency_logs (Abaikan bilik setup sistem "ACTIVE_ROOM")
                 const { data, error } = await supabaseClientInstance
                     .from('emergency_logs')
                     .select('*')
@@ -281,12 +278,11 @@
                     return;
                 }
 
-                tableBody.innerHTML = ''; // Clear table before inserting new rows
+                tableBody.innerHTML = ''; 
 
                 data.forEach(log => {
                     const tr = document.createElement('tr');
                     
-                    // Parse Data Safely
                     const id = log.id || '-';
                     const timestamp = log.created_at ? new Date(log.created_at).toLocaleString() : '-';
                     const type = log.emergency_type || '-';
@@ -295,11 +291,9 @@
                     const location = log.raw_location || '-';
                     const status = log.status || '-';
                     
-                    // Generate CSS Classes
                     const priorityClass = priority.toLowerCase();
                     const statusClass = status.toLowerCase().replace(' ', '_');
 
-                    // Map URL handling (If empty, disable button)
                     const mapButton = log.maps_link 
                         ? `<a href="${log.maps_link}" target="_blank" class="maps-btn">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
@@ -324,7 +318,6 @@
             }
         }
 
-        // Fungsi Sort Table
         function sortTable(n) {
             const table = document.querySelector("table");
             let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
@@ -362,11 +355,9 @@
             }
         }
 
-        // Initialize script once DOM is loaded
         document.addEventListener('DOMContentLoaded', () => {
             initSupabase();
             fetchLogs();
-            // Polling database setiap 5 saat untuk update data live
             setInterval(fetchLogs, 5000);
         });
     </script>
