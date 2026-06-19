@@ -30,7 +30,7 @@ def send_telegram_dispatch(record_id: str, emergency_details: str, latitude: str
     Include the record_id, emergency details, latitude, and longitude.
     """
     logger.info("Sending dispatch to Telegram and updating Supabase...")
-    maps_link = f"http://googleusercontent.com/maps.google.com/?q={latitude},{longitude}"
+    maps_link = f"http://maps.google.com/?q={latitude},{longitude}"
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {

@@ -123,26 +123,14 @@ async def handle_chat(request: ChatRequest):
     global CEKAP_ROOM_ID, pwa_chat_memory, medical_alert_given
     user_text = request.message.strip()
 
-    # Chat terus secara lokal dengan Caller (Pantas)
     pwa_chat_memory.append(HumanMessage(content=user_text))
     
     try:
         response = local_llm.invoke(pwa_chat_memory)
         ai_reply = response.content.strip()
         
-        # Kes di mana maklumat telah lengkap dan dihantar ke Manager
         if "<TRANSFER_TO_MANAGER:" in ai_reply:
             extracted_info = ai_reply.split("<TRANSFER_TO_MANAGER:")[-1].split(">")[0].strip()
-            
-            # Ekstrak perbualan sebenar untuk caller (Contoh: "Terima kasih, sila tunggu...")
-            clean_ui_reply = ai_reply.split("<TRANSFER_TO_MANAGER:")[0].strip()
-            
-            # Paksa AI jana jawapan jika ia tertinggal ayat
-            if not clean_ui_reply:
-                fallback = local_llm.invoke([SystemMessage(content="Say 'Thank you, please wait while help is dispatched.' naturally in the exact language the caller used.")]).content
-                clean_ui_reply = fallback.strip()
-                
-            pwa_chat_memory.append(AIMessage(content=clean_ui_reply))
             medical_alert_given = False 
             
             if not CEKAP_ROOM_ID:
@@ -160,8 +148,11 @@ async def handle_chat(request: ChatRequest):
                 )
             )
             
-            # Polling SINGKAT (Max 12 Saat) untuk elak PWA Timeout/Failed to Connect
-            for _ in range(8):
+        if CEKAP_ROOM_ID:
+            fr_id, fr_key = AGENTS["first_responder"]
+            rest_client = AsyncRestClient(api_key=fr_key, base_url=BAND_URL)
+            
+            for _ in range(5): 
                 await asyncio.sleep(1.5)
                 try:
                     resp = await rest_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
@@ -170,44 +161,49 @@ async def handle_chat(request: ChatRequest):
                     for msg in messages:
                         content = getattr(msg, "content", "")
                         
-                        # Jika ada Arahan Perubatan (Medical Alert)
                         if "SYSTEM_MEDICAL_ALERT:" in content and not medical_alert_given:
                             medical_steps = content.split("SYSTEM_MEDICAL_ALERT:")[-1].strip()
                             medical_alert_given = True
                             
-                            # Terjemah arahan perubatan secara dinamik ke bahasa pemanggil!
                             trans_prompt = f"Translate and format these first-aid steps naturally into the exact language the caller is using: {medical_steps}"
-                            translated_med = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=trans_prompt)]).content.strip()
+                            translated_med = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=trans_prompt)]).content.replace('"', '').strip()
                             
-                            # Gabungkan ucapan "Sila tunggu..." bersama arahan perubatan
-                            final_reply = f"{clean_ui_reply}\n\n{translated_med}"
+                            clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
+                            final_reply = f"{clean_ui_reply}\n\n{translated_med}" if clean_ui_reply else translated_med
                             pwa_chat_memory.append(AIMessage(content=translated_med))
                             return {"status": "ACTIVE", "reply": final_reply}
                             
-                        # Jika Misi Terus Berjaya
                         if "MISSION_SUCCESS" in content:
                             CEKAP_ROOM_ID = None 
                             term_prompt = "Say EXACTLY 'Rescue units have been successfully dispatched. Terminating call.' but naturally in the caller's language."
-                            translated_term = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=term_prompt)]).content.strip()
+                            translated_term = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=term_prompt)]).content.replace('"', '').strip()
                             
-                            final_reply = f"{clean_ui_reply}\n\n{translated_term}"
-                            pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)] 
+                            clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
+                            final_reply = f"{clean_ui_reply}\n\n{translated_term}" if clean_ui_reply else translated_term
+                            pwa_chat_memory = [SystemMessage(content=FIRST_RESPONDER_PROMPT)] # Clear Memory 
                             return {"status": "TERMINATE_CALL", "reply": final_reply}
-                            
                 except Exception:
                     pass
 
-            # Jika lepas 12 saat tiada balasan lagi, terus lepaskan ucapan penutup (Sila tunggu...)
-            return {"status": "ACTIVE", "reply": clean_ui_reply}
-
-        # Step 3: Perbualan Biasa (Jika belum cukup maklumat)
         clean_ui_reply = re.sub(r'<TRANSFER_TO_MANAGER:.*?>', '', ai_reply).strip()
+        
+        if not clean_ui_reply:
+            fallback_prompt = "Say 'Thank you, please wait while help is dispatched.' naturally in the exact language the caller used."
+            fallback = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=fallback_prompt)]).content
+            clean_ui_reply = fallback.replace('"', '').strip()
+
         pwa_chat_memory.append(AIMessage(content=clean_ui_reply))
         return {"status": "ACTIVE", "reply": clean_ui_reply}
 
     except Exception as e:
         logger.error(f"PWA Processing Error: {str(e)}")
-        return {"status": "ERROR", "reply": "Sistem sedang memproses. Harap bertenang."}
+        try:
+            err_prompt = "Say 'The system is processing. Please stay calm.' naturally in the exact language the caller used."
+            err_reply = local_llm.invoke(pwa_chat_memory + [HumanMessage(content=err_prompt)]).content.replace('"', '').strip()
+        except Exception:
+            err_reply = "The system is processing. Please stay calm."
+            
+        return {"status": "ERROR", "reply": err_reply}
 
 if __name__ == "__main__":
     import uvicorn
