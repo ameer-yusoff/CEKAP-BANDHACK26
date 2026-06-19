@@ -167,7 +167,7 @@ async def handle_chat(request: ChatRequest):
         disp_client = AsyncRestClient(api_key=disp_key, base_url=BAND_URL)
         fr_id, _ = AGENTS["first_responder"]
         
-        # --- BUG FIX: PRELOAD OLD MESSAGES TO AVOID GHOSTING ---
+        # --- PRELOAD OLD MESSAGES TO AVOID GHOSTING ---
         try:
             old_msgs = await disp_client.agent_api_messages.get_agent_chat_messages(chat_id=CEKAP_ROOM_ID, page=1)
             for m in getattr(old_msgs, "data", []):
@@ -176,6 +176,7 @@ async def handle_chat(request: ChatRequest):
             logger.warning(f"Failed to preload messages: {e}")
 
         # Inject Caller's Message
+        logger.info(f"Injecting message from Caller: {user_text}")
         send_resp = await disp_client.agent_api_messages.create_agent_chat_message(
             CEKAP_ROOM_ID, 
             message=ChatMessageRequest(
@@ -184,12 +185,12 @@ async def handle_chat(request: ChatRequest):
             )
         )
         
-        # Avoid parsing our own proxy message
+        # Add our own injected message to processed list so we don't read it back
         my_msg_id = getattr(getattr(send_resp, "data", None), "id", None)
         if my_msg_id:
             processed_msg_ids.add(my_msg_id)
         
-        # Poll for 30 seconds
+        # Poll aggressively for 30 seconds to catch the AI's response
         for _ in range(15):
             await asyncio.sleep(2)
             try:
@@ -203,20 +204,30 @@ async def handle_chat(request: ChatRequest):
                     msg_id = getattr(msg, "id", None)
                     
                     if content and msg_id not in processed_msg_ids:
-                        processed_msg_ids.add(msg_id)
-                        
+                        # Ignore messages that are just system inputs
+                        if "[CALLER_INPUT]" in content:
+                            processed_msg_ids.add(msg_id)
+                            continue
+                            
                         # Trigger system termination upon successful dispatch
                         if "MISSION_SUCCESS" in content:
+                            processed_msg_ids.add(msg_id)
                             CEKAP_ROOM_ID = None # Force the next caller to generate a new room
                             return {"status": "TERMINATE_CALL", "reply": "Pasukan penyelamat sedang bergegas ke lokasi anda. Panggilan ditamatkan."}
                         
                         # Cleanly extract messages meant for the Caller
                         if "CALLER:" in content:
+                            processed_msg_ids.add(msg_id)
                             clean_reply = content.split("CALLER:")[-1].strip()
+                            # Remove stray JSON or tool markings just in case
+                            clean_reply = re.sub(r'\[\{.*?\}\]', '', clean_reply).replace('"', '')
                             return {"status": "ACTIVE", "reply": clean_reply}
-            except Exception:
+                            
+            except Exception as inner_e:
+                logger.debug(f"Polling loop skip: {inner_e}")
                 pass
 
+        # If 30 seconds pass without CALLER: or MISSION_SUCCESS, send default
         return {"status": "ACTIVE", "reply": "Sistem sedang menyelaras unit tindakan. Sila tunggu..."}
 
     except Exception as e:
